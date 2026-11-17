@@ -1,0 +1,39 @@
+[project]
+name = "python-bootcamp"
+version = "0.1.0"
+description = "Hands-on exercises with tests: Python core, Pydantic, FastAPI, SQLAlchemy, LangChain"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "pydantic>=2.14",
+    "pydantic-settings>=2.16",
+    "fastapi>=0.163",
+    "httpx>=0.28",
+    "sqlalchemy[asyncio]>=2.1",
+    "aiosqlite>=0.22",
+    "langchain-core>=1.8",
+    "langchain-text-splitters>=1.1",
+    "pytest>=9.0",
+    "pytest-asyncio>=1.5",
+]
+
+# No [build-system]: this is a plain exercise workspace, not an installable package.
+# `uv sync` installs the dependencies only.
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = [
+    "m01_python_core",
+    "m02_pydantic",
+    "m03_fastapi",
+    "m04_sqlalchemy",
+    "m05_langchain",
+]
+python_files = ["test_*.py"]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+addopts = "-ra"
+filterwarnings = [
+    # m04 e06 deliberately triggers MissingGreenlet; SQLAlchemy then drops an un-awaited coroutine.
+    "ignore:coroutine 'Connection.cursor' was never awaited:RuntimeWarning",
+]
