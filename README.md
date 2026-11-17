@@ -65,6 +65,11 @@ uv run pytest -x --lf                                      # stop at first failu
 Tests are grouped as `TestTask<N><Name>` classes, so `-k TaskN` selects
 exactly one task.
 
+On `main` you may see a few `RuntimeWarning: coroutine ... was never
+awaited`. They come from stubbed async generators: until you write the
+`yield`, the stub is a plain coroutine. They disappear once you implement
+the task.
+
 ## Themes
 
 | # | Theme | Exercises |
