@@ -41,7 +41,11 @@ def stream_answer(model: ChatModel, question: str) -> Iterator[str]:
     This is a generator function (use ``yield``), so the caller receives
     tokens as soon as the model produces them.
     """
-    raise NotImplementedError("TODO: implement this task")
+    prompt = ChatPromptTemplate.from_messages([("system", CHAT_SYSTEM), ("human", "{question}")])
+    chain = prompt | model | StrOutputParser()
+    for chunk in chain.stream({"question": question}):
+        if chunk:
+            yield chunk
 
 
 # ---------------------------------------------------------------------------
@@ -62,7 +66,16 @@ async def astream_sse(model: ChatModel, question: str) -> AsyncIterator[str]:
       frame and stop: no ``[DONE]``, and the exception is **not** re-raised
       (the HTTP response has already started; you can only tell the client).
     """
-    raise NotImplementedError("TODO: implement this task")
+    prompt = ChatPromptTemplate.from_messages([("system", CHAT_SYSTEM), ("human", "{question}")])
+    chain = prompt | model | StrOutputParser()
+    try:
+        async for chunk in chain.astream({"question": question}):
+            if chunk:
+                yield f"data: {json.dumps({'token': chunk})}\n\n"
+    except Exception as exc:
+        yield f"event: error\ndata: {json.dumps({'error': str(exc)})}\n\n"
+        return
+    yield "data: [DONE]\n\n"
 
 
 # ---------------------------------------------------------------------------
@@ -84,7 +97,13 @@ async def stream_tokens_from_tagged_model(
     and return ``event["data"]["chunk"].content`` of each, skipping empty
     strings, in order.
     """
-    raise NotImplementedError("TODO: implement this task")
+    tokens: list[str] = []
+    async for event in chain.astream_events(inputs, version="v2"):
+        if event["event"] == "on_chat_model_stream" and tag in event.get("tags", []):
+            content = event["data"]["chunk"].content
+            if content:
+                tokens.append(content)
+    return tokens
 
 
 # ---------------------------------------------------------------------------
@@ -108,7 +127,25 @@ class SessionStore:
     makes the storage explicit.
     """
 
-    pass
+    def __init__(self, max_messages: int = 20) -> None:
+        if max_messages < 1:
+            raise ValueError("max_messages must be >= 1")
+        self.max_messages = max_messages
+        self._sessions: dict[str, list[BaseMessage]] = {}
+
+    def get(self, session_id: str) -> list[BaseMessage]:
+        return list(self._sessions.get(session_id, []))
+
+    def append(self, session_id: str, messages: Sequence[BaseMessage]) -> None:
+        history = self._sessions.setdefault(session_id, [])
+        history.extend(messages)
+        del history[: -self.max_messages]
+
+    def clear(self, session_id: str) -> None:
+        self._sessions.pop(session_id, None)
+
+    def session_ids(self) -> list[str]:
+        return sorted(self._sessions)
 
 
 # ---------------------------------------------------------------------------
@@ -142,7 +179,18 @@ def build_chat_with_history(model: ChatModel, store: SessionStore) -> Runnable[d
 
     Sessions are independent: one session never sees another's messages.
     """
-    raise NotImplementedError("TODO: implement this task")
+    chain = HISTORY_PROMPT | model | StrOutputParser()
+
+    def chat(inputs: dict, config: RunnableConfig) -> str:
+        session_id = (config.get("configurable") or {}).get("session_id")
+        if not session_id:
+            raise ValueError("config['configurable']['session_id'] is required")
+        question = inputs["question"]
+        answer = chain.invoke({"history": store.get(session_id), "question": question})
+        store.append(session_id, [HumanMessage(question), AIMessage(answer)])
+        return answer
+
+    return RunnableLambda(chat)
 
 
 # ---------------------------------------------------------------------------
@@ -172,7 +220,32 @@ class TokenCountingHandler(BaseCallbackHandler):
     chat models too.
     """
 
-    pass
+    def __init__(self) -> None:
+        self.chat_model_starts = 0
+        self.llm_starts = 0
+        self.tokens: list[str] = []
+        self.llm_ends = 0
+        self.errors: list[BaseException] = []
+        self.tags: set[str] = set()
+
+    def on_chat_model_start(
+        self, serialized: dict[str, Any], messages: list[list[BaseMessage]], **kwargs: Any
+    ) -> None:
+        self.chat_model_starts += 1
+        self.tags.update(kwargs.get("tags") or [])
+
+    def on_llm_start(self, serialized: dict[str, Any], prompts: list[str], **kwargs: Any) -> None:
+        self.llm_starts += 1
+        self.tags.update(kwargs.get("tags") or [])
+
+    def on_llm_new_token(self, token: str, **kwargs: Any) -> None:
+        self.tokens.append(token)
+
+    def on_llm_end(self, response: LLMResult, **kwargs: Any) -> None:
+        self.llm_ends += 1
+
+    def on_llm_error(self, error: BaseException, **kwargs: Any) -> None:
+        self.errors.append(error)
 
 
 # ---------------------------------------------------------------------------
@@ -199,4 +272,10 @@ def invoke_traced(
     and return ``chain.invoke(inputs, config=config)``. Every nested step
     (prompt, model, parser) receives the same callbacks, tags and metadata.
     """
-    raise NotImplementedError("TODO: implement this task")
+    config: RunnableConfig = {
+        "callbacks": [handler],
+        "tags": [f"user:{user_id}"],
+        "metadata": {"user_id": user_id, "request_id": request_id},
+        "run_name": "chat_request",
+    }
+    return chain.invoke(inputs, config=config)

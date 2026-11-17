@@ -49,7 +49,14 @@ def build_url(base: str, /, *segments: str | int, secure: bool = True, **query: 
     >>> build_url("localhost:8000", secure=False, debug=None)
     'http://localhost:8000'
     """
-    raise NotImplementedError("TODO: implement this task")
+    scheme = "https" if secure else "http"
+    parts = [base.strip("/")]
+    parts += [s for s in (str(seg).strip("/") for seg in segments) if s]
+    url = f"{scheme}://" + "/".join(parts)
+    params = {k: v for k, v in query.items() if v is not None}
+    if params:
+        url += "?" + urlencode(params)
+    return url
 
 
 # ---------------------------------------------------------------------------
@@ -71,7 +78,16 @@ def make_counter(start: int = 0, step: int = 1) -> Callable[[], int]:
     Hint: an inner function needs ``nonlocal`` to rebind a variable of the
     enclosing function.
     """
-    raise NotImplementedError("TODO: implement this task")
+    if step == 0:
+        raise ValueError("step must not be 0")
+    current = start - step
+
+    def next_value() -> int:
+        nonlocal current
+        current += step
+        return current
+
+    return next_value
 
 
 # ---------------------------------------------------------------------------
@@ -92,7 +108,16 @@ def compose(*funcs: Callable[[Any], Any]) -> Callable[[Any], Any]:
     Hint: ``functools.reduce`` works, and so does a plain loop over
     ``reversed(funcs)``.
     """
-    raise NotImplementedError("TODO: implement this task")
+    for f in funcs:
+        if not callable(f):
+            raise TypeError(f"{f!r} is not callable")
+
+    def composed(value: Any) -> Any:
+        for f in reversed(funcs):
+            value = f(value)
+        return value
+
+    return composed
 
 
 # ---------------------------------------------------------------------------
@@ -117,7 +142,7 @@ def make_alert_sender(channel: str) -> functools.partial[str]:
     >>> page_ops("disk full")
     '[ops]! disk full (retries=3)'
     """
-    raise NotImplementedError("TODO: implement this task")
+    return functools.partial(send_notification, channel, urgent=True, retries=3)
 
 
 # ---------------------------------------------------------------------------
@@ -140,7 +165,13 @@ def count_calls[**P, R](func: Callable[P, R]) -> Callable[P, R]:
     >>> greet("ann"), greet.calls, greet.__name__
     ('hi ann', 1, 'greet')
     """
-    raise NotImplementedError("TODO: implement this task")
+    @functools.wraps(func)
+    def wrapper(*args: P.args, **kwargs: P.kwargs) -> R:
+        wrapper.calls += 1  # type: ignore[attr-defined]
+        return func(*args, **kwargs)
+
+    wrapper.calls = 0  # type: ignore[attr-defined]
+    return wrapper
 
 
 # ---------------------------------------------------------------------------
@@ -169,7 +200,22 @@ def memoize[R](func: Callable[..., R]) -> Callable[..., R]:
     Hint: build the key, then call ``hash(key)`` inside ``try`` to find out
     whether it is hashable. Call ``func`` outside that ``try``.
     """
-    raise NotImplementedError("TODO: implement this task")
+    cache: dict[Any, R] = {}
+
+    @functools.wraps(func)
+    def wrapper(*args: Any, **kwargs: Any) -> R:
+        key = (args, tuple(sorted(kwargs.items())))
+        try:
+            hash(key)
+        except TypeError:
+            return func(*args, **kwargs)
+        if key not in cache:
+            cache[key] = func(*args, **kwargs)
+        return cache[key]
+
+    wrapper.cache = cache  # type: ignore[attr-defined]
+    wrapper.cache_clear = cache.clear  # type: ignore[attr-defined]
+    return wrapper
 
 
 # ---------------------------------------------------------------------------
@@ -202,7 +248,24 @@ def retry[**P, R](
     Example: with ``attempts=4, delay=0.1`` and a function that always fails,
     ``sleep`` is called with 0.1, 0.2, and 0.4, then the error is raised.
     """
-    raise NotImplementedError("TODO: implement this task")
+    if attempts < 1:
+        raise ValueError("attempts must be >= 1")
+
+    def decorator(func: Callable[P, R]) -> Callable[P, R]:
+        @functools.wraps(func)
+        def wrapper(*args: P.args, **kwargs: P.kwargs) -> R:
+            for attempt in range(attempts):
+                try:
+                    return func(*args, **kwargs)
+                except exceptions:
+                    if attempt == attempts - 1:
+                        raise
+                    sleep(delay * backoff**attempt)
+            raise AssertionError("unreachable")
+
+        return wrapper
+
+    return decorator
 
 
 # ---------------------------------------------------------------------------
@@ -238,9 +301,41 @@ def to_jsonable(value: Any) -> Any:
     parameter, or as an argument: ``@to_jsonable.register(tuple)``. You can
     stack ``register`` decorators.
     """
-    raise NotImplementedError("TODO: implement this task")
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+    raise TypeError(f"Object of type {type(value).__name__} is not JSON serializable")
 
 
 # Register the type-specific implementations of ``to_jsonable`` here.
-# (your @to_jsonable.register implementations go here)
+@to_jsonable.register(Decimal)
+@to_jsonable.register(UUID)
+def _(value: Decimal | UUID) -> str:
+    return str(value)
+
+
+@to_jsonable.register
+def _(value: date) -> str:
+    return value.isoformat()
+
+
+@to_jsonable.register
+def _(value: Enum) -> Any:
+    return to_jsonable(value.value)
+
+
+@to_jsonable.register(list)
+@to_jsonable.register(tuple)
+def _(value: list[Any] | tuple[Any, ...]) -> list[Any]:
+    return [to_jsonable(v) for v in value]
+
+
+@to_jsonable.register(set)
+@to_jsonable.register(frozenset)
+def _(value: set[Any] | frozenset[Any]) -> list[Any]:
+    return sorted(to_jsonable(v) for v in value)
+
+
+@to_jsonable.register
+def _(value: dict) -> dict[str, Any]:
+    return {str(k): to_jsonable(v) for k, v in value.items()}
 

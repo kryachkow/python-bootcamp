@@ -80,12 +80,16 @@ ALLOWED_TRANSITIONS: dict[ShipmentStatus, set[ShipmentStatus]] = {
 # (``ConfigDict(use_enum_values=True)`` would store raw values instead of
 # members; do NOT use it here, members are more useful in code.)
 
-# TODO: replace the placeholder below with the real definition(s).
 class Shipment(BaseModel):
-    """TODO: id, status, priority, and advance()."""
+    id: str
+    status: ShipmentStatus = ShipmentStatus.PENDING
+    priority: Priority = Priority.NORMAL
 
     def advance(self, to: ShipmentStatus | str) -> Shipment:
-        raise NotImplementedError("TODO: implement this task")
+        new = ShipmentStatus(to)
+        if new not in ALLOWED_TRANSITIONS[self.status]:
+            raise ValueError(f"cannot go from {self.status} to {new}")
+        return self.model_copy(update={"status": new})
 
 
 # ---------------------------------------------------------------------------
@@ -111,30 +115,35 @@ class Shipment(BaseModel):
 #       - ``text() -> str``: all ``TextChunk.text`` values joined with ``""``,
 #       - ``tool_calls() -> list[ToolCall]``: the tool calls, in order.
 
-# TODO: replace the placeholders below with the real definitions.
 class TextChunk(BaseModel):
-    """TODO: type tag + text."""
+    type: Literal["text"] = "text"
+    text: str
 
 
 class ToolCall(BaseModel):
-    """TODO: type tag + id, name, arguments."""
+    type: Literal["tool_call"] = "tool_call"
+    id: str
+    name: str
+    arguments: dict[str, Any] = {}
 
 
 class ErrorEvent(BaseModel):
-    """TODO: type tag + message, retryable."""
+    type: Literal["error"] = "error"
+    message: str
+    retryable: bool = False
 
 
-StreamEvent = TextChunk | ToolCall | ErrorEvent  # TODO: make it a discriminated union
+StreamEvent = Annotated[TextChunk | ToolCall | ErrorEvent, Field(discriminator="type")]
 
 
 class AgentTurn(BaseModel):
-    """TODO: events + text() and tool_calls()."""
+    events: list[StreamEvent]
 
     def text(self) -> str:
-        raise NotImplementedError("TODO: implement this task")
+        return "".join(e.text for e in self.events if isinstance(e, TextChunk))
 
     def tool_calls(self) -> list[ToolCall]:
-        raise NotImplementedError("TODO: implement this task")
+        return [e for e in self.events if isinstance(e, ToolCall)]
 
 
 # ---------------------------------------------------------------------------
@@ -151,9 +160,21 @@ class AgentTurn(BaseModel):
 # ``Page[User].model_validate({...})`` validates every item as a ``User``;
 # ``Page[int]`` coerces ``"1"`` to ``1``.
 
-# TODO: replace the placeholder below with the real definition(s).
 class Page[T](BaseModel):
-    """TODO: items, total, page, size + computed pages and has_next."""
+    items: list[T]
+    total: int = Field(ge=0)
+    page: int = Field(ge=1)
+    size: int = Field(ge=1)
+
+    @computed_field
+    @property
+    def pages(self) -> int:
+        return math.ceil(self.total / self.size)
+
+    @computed_field
+    @property
+    def has_next(self) -> bool:
+        return self.page < self.pages
 
 
 def paginate[T](items: Sequence[T], page: int, size: int) -> Page[T]:
@@ -167,7 +188,10 @@ def paginate[T](items: Sequence[T], page: int, size: int) -> Page[T]:
     >>> paginate(["a", "b", "c"], page=2, size=2)
     Page(items=['c'], total=3, page=2, size=2, pages=2, has_next=False)
     """
-    raise NotImplementedError("TODO: implement this task")
+    if page < 1 or size < 1:
+        raise ValueError("page and size must be >= 1")
+    start = (page - 1) * size
+    return Page(items=list(items[start : start + size]), total=len(items), page=page, size=size)
 
 
 # ---------------------------------------------------------------------------
@@ -186,17 +210,28 @@ def paginate[T](items: Sequence[T], page: int, size: int) -> Page[T]:
 #
 # Hint: annotate the classmethods' return type as ``Self``.
 
-# TODO: replace the placeholder below with the real definition(s).
 class ApiResponse[T](BaseModel):
-    """TODO: ok, data, error, the consistency rules, success() and failure()."""
+    ok: bool
+    data: T | None = None
+    error: str | None = None
+
+    @model_validator(mode="after")
+    def _check_consistency(self) -> Self:
+        if self.ok and self.error is not None:
+            raise ValueError("successful response cannot have an error")
+        if not self.ok and self.error is None:
+            raise ValueError("failed response needs an error")
+        if not self.ok and self.data is not None:
+            raise ValueError("failed response cannot have data")
+        return self
 
     @classmethod
     def success(cls, data: T) -> Self:
-        raise NotImplementedError("TODO: implement this task")
+        return cls(ok=True, data=data)
 
     @classmethod
     def failure(cls, error: str) -> Self:
-        raise NotImplementedError("TODO: implement this task")
+        return cls(ok=False, error=error)
 
 
 # ---------------------------------------------------------------------------
@@ -212,7 +247,8 @@ class ApiResponse[T](BaseModel):
 #
 # then implement the three functions below.
 
-# TODO: create the two module-level TypeAdapters here.
+_EVENTS_ADAPTER: TypeAdapter[list[StreamEvent]] = TypeAdapter(list[StreamEvent])
+_STOCK_ADAPTER: TypeAdapter[dict[str, int]] = TypeAdapter(dict[str, NonNegativeInt])
 
 
 def parse_events(raw: str | bytes) -> list[StreamEvent]:
@@ -223,7 +259,7 @@ def parse_events(raw: str | bytes) -> list[StreamEvent]:
 
     Invalid JSON or invalid events raise ``ValidationError``.
     """
-    raise NotImplementedError("TODO: implement this task")
+    return _EVENTS_ADAPTER.validate_json(raw)
 
 
 def dump_events(events: Sequence[TextChunk | ToolCall | ErrorEvent]) -> bytes:
@@ -231,7 +267,7 @@ def dump_events(events: Sequence[TextChunk | ToolCall | ErrorEvent]) -> bytes:
 
     ``parse_events(dump_events(events)) == list(events)``.
     """
-    raise NotImplementedError("TODO: implement this task")
+    return _EVENTS_ADAPTER.dump_json(list(events))
 
 
 def parse_stock(data: Mapping[str, Any]) -> dict[str, int]:
@@ -240,7 +276,7 @@ def parse_stock(data: Mapping[str, Any]) -> dict[str, int]:
     ``{"A": "3", "B": 0}`` -> ``{"A": 3, "B": 0}``. ``{"A": -1}`` raises
     ``ValidationError`` with ``loc == ("A",)`` and type ``"greater_than_equal"``.
     """
-    raise NotImplementedError("TODO: implement this task")
+    return _STOCK_ADAPTER.validate_python(data)
 
 
 # ---------------------------------------------------------------------------
@@ -266,9 +302,27 @@ def parse_stock(data: Mapping[str, Any]) -> dict[str, int]:
 # Hint: in a ``RootModel`` the single field is called ``"root"``, so
 # ``@field_validator("root", mode=...)`` works.
 
-# TODO: replace the placeholder below with the real definition(s).
 class Tags(RootModel[list[str]]):
-    """TODO: the two validators, __iter__, __len__, __contains__."""
+    @field_validator("root", mode="before")
+    @classmethod
+    def _split(cls, value: Any) -> Any:
+        if isinstance(value, str):
+            return value.split(",")
+        return value
+
+    @field_validator("root")
+    @classmethod
+    def _normalise(cls, value: list[str]) -> list[str]:
+        return list(dict.fromkeys(t.strip().lower() for t in value if t.strip()))
+
+    def __iter__(self) -> Iterator[str]:  # type: ignore[override]
+        return iter(self.root)
+
+    def __len__(self) -> int:
+        return len(self.root)
+
+    def __contains__(self, tag: object) -> bool:
+        return isinstance(tag, str) and tag.strip().lower() in self.root
 
 
 # ---------------------------------------------------------------------------
@@ -288,18 +342,25 @@ class Tags(RootModel[list[str]]):
 # A nested JSON document validates in one call, and errors point into the
 # tree, e.g. ``("children", 0, "children", 1, "name")``.
 
-# TODO: replace the placeholder below with the real definition(s).
 class Category(BaseModel):
-    """TODO: name, children, walk(), depth(), find()."""
+    name: str = Field(min_length=1)
+    children: list[Category] = []
 
     def walk(self) -> Iterator[str]:
-        raise NotImplementedError("TODO: implement this task")
+        yield self.name
+        for child in self.children:
+            yield from child.walk()
 
     def depth(self) -> int:
-        raise NotImplementedError("TODO: implement this task")
+        return 1 + max((child.depth() for child in self.children), default=0)
 
     def find(self, name: str) -> Category | None:
-        raise NotImplementedError("TODO: implement this task")
+        if self.name == name:
+            return self
+        for child in self.children:
+            if (found := child.find(name)) is not None:
+                return found
+        return None
 
 
 # ---------------------------------------------------------------------------
@@ -322,8 +383,30 @@ class Category(BaseModel):
 #     ``{"type": "string", "pattern": r"^-?\d+(\.\d{1,2})?$", "examples": ["12.34"]}``
 #     (``WithJsonSchema``), because the schema derived from ``int`` would lie.
 
-# TODO: replace the placeholder below with the real definition(s).
-MoneyCents = int
+def _to_cents(value: Any) -> int:
+    if isinstance(value, bool) or not isinstance(value, (int, float, str, Decimal)):
+        raise ValueError("invalid amount")
+    try:
+        amount = Decimal(str(value).strip())
+    except InvalidOperation:
+        raise ValueError("invalid amount") from None
+    if not amount.is_finite():
+        raise ValueError("invalid amount")
+    if amount != amount.quantize(Decimal("0.01")):
+        raise ValueError("at most 2 decimal places")
+    return int(amount * 100)
+
+
+def _cents_to_str(cents: int) -> str:
+    return f"{Decimal(cents) / 100:.2f}"
+
+
+MoneyCents = Annotated[
+    int,
+    BeforeValidator(_to_cents),
+    PlainSerializer(_cents_to_str, return_type=str),
+    WithJsonSchema({"type": "string", "pattern": r"^-?\d+(\.\d{1,2})?$", "examples": ["12.34"]}),
+]
 
 
 # ---------------------------------------------------------------------------
@@ -375,4 +458,13 @@ class SemVer:
         ``plain_serializer_function_ser_schema(str, return_schema=str_schema())``
         (without ``return_schema`` the serialization-mode JSON Schema fails).
         """
-        raise NotImplementedError("TODO: implement this task")
+        from_str = core_schema.chain_schema(
+            [core_schema.str_schema(), core_schema.no_info_plain_validator_function(cls.parse)]
+        )
+        return core_schema.json_or_python_schema(
+            json_schema=from_str,
+            python_schema=core_schema.union_schema([core_schema.is_instance_schema(cls), from_str]),
+            serialization=core_schema.plain_serializer_function_ser_schema(
+                str, return_schema=core_schema.str_schema()
+            ),
+        )

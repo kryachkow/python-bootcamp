@@ -79,7 +79,18 @@ def filter_employees(
     (or call ``.where()`` once per condition: repeated calls are ANDed).
     ``Employee.name.icontains(text)`` or ``.ilike(f"%{text}%")``; ``or_(a, b)``.
     """
-    raise NotImplementedError("TODO: implement this task")
+    stmt = select(Employee.name)
+    conditions = []
+    if min_salary is not None:
+        conditions.append(Employee.salary >= min_salary)
+    if department_names is not None:
+        stmt = stmt.join(Employee.department)
+        conditions.append(Department.name.in_(department_names))
+    if text is not None:
+        conditions.append(or_(Employee.name.icontains(text), Employee.email.icontains(text)))
+    if conditions:
+        stmt = stmt.where(and_(*conditions))
+    return list(session.scalars(stmt.order_by(Employee.name)))
 
 
 # ---------------------------------------------------------------------------
@@ -105,7 +116,21 @@ def paginate_employees(session: Session, page: int, per_page: int) -> Page:
     ``select(func.count()).select_from(Employee)``. Order by a unique key too,
     or rows can repeat or vanish between pages.
     """
-    raise NotImplementedError("TODO: implement this task")
+    if page < 1 or per_page < 1:
+        raise ValueError("page and per_page must be >= 1")
+    total = session.scalar(select(func.count()).select_from(Employee)) or 0
+    stmt = (
+        select(Employee.name)
+        .order_by(Employee.name, Employee.id)
+        .limit(per_page)
+        .offset((page - 1) * per_page)
+    )
+    return Page(
+        items=list(session.scalars(stmt)),
+        total=total,
+        page=page,
+        pages=-(-total // per_page),
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -120,7 +145,12 @@ def employee_departments(session: Session) -> list[tuple[str, str | None]]:
     Hint: ``select(Employee.name, Department.name).outerjoin(Employee.department)``;
     convert each ``Row`` with ``tuple(row)``.
     """
-    raise NotImplementedError("TODO: implement this task")
+    stmt = (
+        select(Employee.name, Department.name)
+        .outerjoin(Employee.department)
+        .order_by(Employee.name)
+    )
+    return [tuple(row) for row in session.execute(stmt)]
 
 
 # ---------------------------------------------------------------------------
@@ -147,7 +177,23 @@ def department_stats(session: Session, min_headcount: int = 1) -> list[DeptStats
     ``func.count(Employee.id)`` counts only non-NULL ids, ``func.count()``
     would count the outer-joined NULL row as 1. ``func.coalesce(func.sum(...), 0)``.
     """
-    raise NotImplementedError("TODO: implement this task")
+    headcount = func.count(Employee.id)
+    stmt = (
+        select(
+            Department.name,
+            headcount.label("headcount"),
+            func.coalesce(func.sum(Employee.salary), 0).label("total_salary"),
+            func.avg(Employee.salary).label("avg_salary"),
+        )
+        .outerjoin(Department.employees)
+        .group_by(Department.id, Department.name)
+        .having(headcount >= min_headcount)
+        .order_by(Department.name)
+    )
+    return [
+        DeptStats(name, count, total, float(avg) if avg is not None else None)
+        for name, count, total, avg in session.execute(stmt)
+    ]
 
 
 # ---------------------------------------------------------------------------
@@ -165,7 +211,19 @@ def above_department_average(session: Session) -> list[str]:
     2. join ``Employee`` to ``dept_avg`` on ``department_id`` and filter on
        ``Employee.salary > dept_avg.c.avg_salary``.
     """
-    raise NotImplementedError("TODO: implement this task")
+    dept_avg = (
+        select(Employee.department_id, func.avg(Employee.salary).label("avg_salary"))
+        .where(Employee.department_id.is_not(None))
+        .group_by(Employee.department_id)
+        .cte("dept_avg")
+    )
+    stmt = (
+        select(Employee.name)
+        .join(dept_avg, Employee.department_id == dept_avg.c.department_id)
+        .where(Employee.salary > dept_avg.c.avg_salary)
+        .order_by(Employee.name)
+    )
+    return list(session.scalars(stmt))
 
 
 # ---------------------------------------------------------------------------
@@ -178,7 +236,9 @@ def empty_departments(session: Session) -> list[str]:
     correlated subquery. (``~Department.employees.any()`` generates the same
     SQL through the relationship.)
     """
-    raise NotImplementedError("TODO: implement this task")
+    has_employees = exists().where(Employee.department_id == Department.id)
+    stmt = select(Department.name).where(~has_employees).order_by(Department.name)
+    return list(session.scalars(stmt))
 
 
 def anyone_hired_after(session: Session, day: date) -> bool:
@@ -188,7 +248,7 @@ def anyone_hired_after(session: Session, day: date) -> bool:
 
     Hint: ``session.scalar(select(exists().where(...)))``.
     """
-    raise NotImplementedError("TODO: implement this task")
+    return bool(session.scalar(select(exists().where(Employee.hired_on > day))))
 
 
 # ---------------------------------------------------------------------------
@@ -201,7 +261,7 @@ def get_employee_by_email(session: Session, email: str) -> Employee:
     when nothing matches it raises ``sqlalchemy.exc.NoResultFound``. Let that
     exception propagate; "must exist" lookups should fail loudly.
     """
-    raise NotImplementedError("TODO: implement this task")
+    return session.execute(select(Employee).where(Employee.email == email)).scalar_one()
 
 
 def sole_member_of(session: Session, department_name: str) -> Employee | None:
@@ -211,7 +271,8 @@ def sole_member_of(session: Session, department_name: str) -> Employee | None:
     ``sqlalchemy.exc.MultipleResultsFound`` raised by ``scalar_one_or_none()``
     must propagate. ``first()`` would hide that bug by picking a random one.
     """
-    raise NotImplementedError("TODO: implement this task")
+    stmt = select(Employee).join(Employee.department).where(Department.name == department_name)
+    return session.execute(stmt).scalar_one_or_none()
 
 
 # ---------------------------------------------------------------------------
@@ -227,7 +288,14 @@ def salary_ranks(session: Session, department_name: str) -> list[tuple[str, int,
 
     Hint: ``func.rank().over(order_by=Employee.salary.desc()).label("rnk")``.
     """
-    raise NotImplementedError("TODO: implement this task")
+    rnk = func.rank().over(order_by=Employee.salary.desc()).label("rnk")
+    stmt = (
+        select(Employee.name, Employee.salary, rnk)
+        .join(Employee.department)
+        .where(Department.name == department_name)
+        .order_by(rnk, Employee.name)
+    )
+    return [tuple(row) for row in session.execute(stmt)]
 
 
 # ---------------------------------------------------------------------------
@@ -246,4 +314,20 @@ def top_earners_per_department(session: Session, n: int) -> dict[str, list[str]]
     ``func.row_number().over(partition_by=..., order_by=(...))`` in a subquery
     (``.subquery()``), then select from it ``WHERE rn <= n``.
     """
-    raise NotImplementedError("TODO: implement this task")
+    rn = (
+        func.row_number()
+        .over(partition_by=Employee.department_id, order_by=(Employee.salary.desc(), Employee.name))
+        .label("rn")
+    )
+    ranked = (
+        select(Department.name.label("dept"), Employee.name.label("emp"), rn)
+        .join(Employee.department)
+        .subquery()
+    )
+    stmt = select(ranked.c.dept, ranked.c.emp).where(ranked.c.rn <= n).order_by(
+        ranked.c.dept, ranked.c.rn
+    )
+    result: dict[str, list[str]] = {}
+    for dept, emp in session.execute(stmt):
+        result.setdefault(dept, []).append(emp)
+    return result

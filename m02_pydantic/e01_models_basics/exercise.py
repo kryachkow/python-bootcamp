@@ -36,9 +36,15 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 # such as ``[]`` for you, but ``default_factory`` states the intent and works
 # for any callable, e.g. ``uuid4`` or ``datetime.now``.)
 
-# TODO: replace the placeholder below with the real definition(s).
 class Product(BaseModel):
-    """A catalogue item. TODO: add the fields from the table above."""
+    """A catalogue item."""
+
+    id: int
+    name: str
+    price: float
+    in_stock: bool = True
+    tags: list[str] = Field(default_factory=list)
+    description: str | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -58,9 +64,14 @@ class Product(BaseModel):
 # Hint: you could also mark single fields with ``Field(strict=True)`` or
 # validate one call strictly with ``Model.model_validate(data, strict=True)``.
 
-# TODO: replace the placeholder below with the real definition(s).
 class StrictPayment(BaseModel):
-    """TODO: strict config + amount_cents, currency, captured."""
+    """A payment where every field must already have the exact type."""
+
+    model_config = ConfigDict(strict=True)
+
+    amount_cents: int
+    currency: str
+    captured: bool = False
 
 
 # ---------------------------------------------------------------------------
@@ -93,20 +104,26 @@ class StrictPayment(BaseModel):
 # >>> order.total()
 # Decimal('2.50')
 
-# TODO: replace the placeholder below with the real definition(s).
 class Address(BaseModel):
-    """TODO: street, city, country_code."""
+    street: str
+    city: str
+    country_code: str = "UA"
 
 
 class OrderItem(BaseModel):
-    """TODO: sku, quantity (>= 1), unit_price (Decimal)."""
+    sku: str
+    quantity: int = Field(ge=1)
+    unit_price: Decimal
 
 
 class Order(BaseModel):
-    """TODO: id, shipping_address, items, note, and total()."""
+    id: int
+    shipping_address: Address
+    items: list[OrderItem]
+    note: str | None = None
 
     def total(self) -> Decimal:
-        raise NotImplementedError("TODO: implement this task")
+        return sum((item.quantity * item.unit_price for item in self.items), Decimal("0"))
 
 
 # ---------------------------------------------------------------------------
@@ -125,7 +142,11 @@ def parse_order(payload: str | bytes | dict[str, Any]) -> Order:
     >>> parse_order('{"id": 1, "shipping_address": {"street": "s", "city": "c"}, "items": []}').id
     1
     """
-    raise NotImplementedError("TODO: implement this task")
+    if isinstance(payload, (str, bytes)):
+        return Order.model_validate_json(payload)
+    if isinstance(payload, dict):
+        return Order.model_validate(payload)
+    raise TypeError(f"unsupported payload type: {type(payload).__name__}")
 
 
 # ---------------------------------------------------------------------------
@@ -147,7 +168,14 @@ def format_errors(exc: ValidationError) -> list[dict[str, str]]:
     Hint: ``exc.errors()`` returns a list of dicts with keys ``type``,
     ``loc``, ``msg``, ``input`` (and more).
     """
-    raise NotImplementedError("TODO: implement this task")
+    return [
+        {
+            "field": ".".join(str(part) for part in err["loc"]) or "__root__",
+            "code": err["type"],
+            "message": err["msg"],
+        }
+        for err in exc.errors()
+    ]
 
 
 # ---------------------------------------------------------------------------
@@ -165,7 +193,9 @@ def apply_discount(product: Product, percent: float) -> Product:
 
     Hint: ``product.model_copy(update={...})``.
     """
-    raise NotImplementedError("TODO: implement this task")
+    if not 0 <= percent <= 100:
+        raise ValueError("percent must be between 0 and 100")
+    return product.model_copy(update={"price": round(product.price * (1 - percent / 100), 2)})
 
 
 # ---------------------------------------------------------------------------
@@ -185,7 +215,7 @@ def with_changes[M: BaseModel](model: M, **changes: Any) -> M:
 
     It works for any model, not only ``Product``.
     """
-    raise NotImplementedError("TODO: implement this task")
+    return type(model).model_validate({**model.model_dump(), **changes})
 
 
 # ---------------------------------------------------------------------------
@@ -200,4 +230,4 @@ def clone_order(order: Order, new_id: int) -> Order:
 
     Hint: ``model_copy`` is shallow by default; pass ``deep=True``.
     """
-    raise NotImplementedError("TODO: implement this task")
+    return order.model_copy(update={"id": new_id}, deep=True)

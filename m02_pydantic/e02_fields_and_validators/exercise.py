@@ -44,9 +44,11 @@ from pydantic import (
 # Hint: ``Field(min_length=..., max_length=..., pattern=..., ge=..., le=...)``.
 # ``min_length``/``max_length`` work on strings AND on lists.
 
-# TODO: replace the placeholder below with the real definition(s).
 class CreateUserRequest(BaseModel):
-    """TODO: username, age, tags, referral_code with Field constraints."""
+    username: str = Field(min_length=3, max_length=32, pattern=r"^[a-z0-9_]+$")
+    age: int = Field(ge=13, le=130)
+    tags: list[str] = Field(default_factory=list, max_length=5)
+    referral_code: str | None = Field(default=None, min_length=6, max_length=6)
 
 
 # ---------------------------------------------------------------------------
@@ -76,13 +78,35 @@ class CreateUserRequest(BaseModel):
 # Hint: a ``ValueError`` raised inside a validator becomes a
 # ``ValidationError`` entry with type ``"value_error"``.
 
-# TODO: replace the placeholders below with the real definitions.
-Slug = str
-CommaSeparated = list[str]
+_SLUG_RE = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
+
+
+def _prepare_slug(value: Any) -> Any:
+    if isinstance(value, str):
+        return re.sub(r"[\s_]+", "-", value.strip().lower())
+    return value
+
+
+def _check_slug(value: str) -> str:
+    if not _SLUG_RE.fullmatch(value):
+        raise ValueError("invalid slug")
+    return value
+
+
+def _split_commas(value: Any) -> Any:
+    if isinstance(value, str):
+        return [part.strip() for part in value.split(",") if part.strip()]
+    return value
+
+
+Slug = Annotated[str, BeforeValidator(_prepare_slug), AfterValidator(_check_slug)]
+CommaSeparated = Annotated[list[str], BeforeValidator(_split_commas)]
 
 
 class Article(BaseModel):
-    """TODO: title, slug (Slug), tags (CommaSeparated)."""
+    title: str
+    slug: Slug
+    tags: CommaSeparated = []
 
 
 # ---------------------------------------------------------------------------
@@ -105,9 +129,39 @@ class Article(BaseModel):
 # Hint: ``@field_validator("first_name", "last_name")`` followed by
 # ``@classmethod``. Use ``mode="before"`` for the phone validator.
 
-# TODO: replace the placeholder below with the real definition(s).
 class Contact(BaseModel):
-    """TODO: first_name, last_name, phone, country + field validators."""
+    first_name: str
+    last_name: str
+    phone: str
+    country: str
+
+    @field_validator("first_name", "last_name")
+    @classmethod
+    def _clean_name(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("must not be blank")
+        return value.title()
+
+    @field_validator("phone", mode="before")
+    @classmethod
+    def _normalise_phone(cls, value: Any) -> Any:
+        if isinstance(value, int):
+            value = str(value)
+        if not isinstance(value, str):
+            return value
+        value = re.sub(r"[\s\-().]", "", value)
+        if not re.fullmatch(r"\+?\d{7,15}", value):
+            raise ValueError("invalid phone number")
+        return value
+
+    @field_validator("country")
+    @classmethod
+    def _check_country(cls, value: str) -> str:
+        value = value.upper()
+        if not re.fullmatch(r"[A-Z]{2}", value):
+            raise ValueError("country must be an ISO alpha-2 code")
+        return value
 
 
 # ---------------------------------------------------------------------------
@@ -128,9 +182,22 @@ class Contact(BaseModel):
 # Field errors (e.g. a bad date) are reported first and the model
 # validator does not run.
 
-# TODO: replace the placeholder below with the real definition(s).
 class Booking(BaseModel):
-    """TODO: check_in, check_out, guests, the date rules, and nights."""
+    check_in: date
+    check_out: date
+    guests: int = Field(default=1, ge=1, le=10)
+
+    @model_validator(mode="after")
+    def _check_dates(self) -> Booking:
+        if self.check_out <= self.check_in:
+            raise ValueError("check_out must be after check_in")
+        if self.nights > 30:
+            raise ValueError("stay is limited to 30 nights")
+        return self
+
+    @property
+    def nights(self) -> int:
+        return (self.check_out - self.check_in).days
 
 
 # ---------------------------------------------------------------------------
@@ -150,9 +217,19 @@ class Booking(BaseModel):
 # Keep the password out of logs: pass ``repr=False`` to both password
 # ``Field``s, so ``repr(request)`` does not show them.
 
-# TODO: replace the placeholder below with the real definition(s).
 class RegisterRequest(BaseModel):
-    """TODO: email, password, password_confirm + the password rules."""
+    email: str
+    password: str = Field(min_length=8, repr=False)
+    password_confirm: str = Field(repr=False)
+
+    @model_validator(mode="after")
+    def _check_passwords(self) -> RegisterRequest:
+        if self.password != self.password_confirm:
+            raise ValueError("passwords do not match")
+        local_part = self.email.split("@", 1)[0].lower()
+        if local_part and local_part in self.password.lower():
+            raise ValueError("password must not contain your email name")
+        return self
 
 
 # ---------------------------------------------------------------------------
@@ -181,9 +258,30 @@ class RegisterRequest(BaseModel):
 # >>> GeoPoint.model_validate("50.45, 30.52")
 # GeoPoint(lat=50.45, lon=30.52)
 
-# TODO: replace the placeholder below with the real definition(s).
 class GeoPoint(BaseModel):
-    """TODO: lat, lon with ranges + a before model validator."""
+    lat: float = Field(ge=-90, le=90)
+    lon: float = Field(ge=-180, le=180)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _normalise(cls, data: Any) -> Any:
+        if isinstance(data, str):
+            data = data.split(",")
+        if isinstance(data, (list, tuple)):
+            if len(data) != 2:
+                raise ValueError("expected exactly two coordinates")
+            lat, lon = data
+            return {"lat": lat.strip() if isinstance(lat, str) else lat,
+                    "lon": lon.strip() if isinstance(lon, str) else lon}
+        if isinstance(data, dict):
+            data = dict(data)
+            if "latitude" in data:
+                data["lat"] = data.pop("latitude")
+            if "longitude" in data:
+                data["lon"] = data.pop("longitude")
+            if "lng" in data:
+                data["lon"] = data.pop("lng")
+        return data
 
 
 # ---------------------------------------------------------------------------
@@ -200,9 +298,11 @@ class GeoPoint(BaseModel):
 #   * ``username: str`` with at least 3 characters (counted AFTER stripping)
 #   * ``balance_cents: int = 0`` with ``>= 0``
 
-# TODO: replace the placeholder below with the real definition(s).
 class Account(BaseModel):
-    """TODO: model_config + username, balance_cents."""
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True, validate_assignment=True)
+
+    username: str = Field(min_length=3)
+    balance_cents: int = Field(default=0, ge=0)
 
 
 # ---------------------------------------------------------------------------
@@ -221,6 +321,13 @@ class Account(BaseModel):
 # >>> Money(amount="1.10", currency="EUR") + Money(amount="2.05", currency="EUR")
 # Money(amount=Decimal('3.15'), currency='EUR')
 
-# TODO: replace the placeholder below with the real definition(s).
 class Money(BaseModel):
-    """TODO: frozen config, amount, currency, and __add__."""
+    model_config = ConfigDict(frozen=True)
+
+    amount: Decimal
+    currency: str = Field(pattern=r"^[A-Z]{3}$")
+
+    def __add__(self, other: Money) -> Money:
+        if self.currency != other.currency:
+            raise ValueError("currency mismatch")
+        return Money(amount=self.amount + other.amount, currency=self.currency)

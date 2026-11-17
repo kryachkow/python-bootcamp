@@ -60,7 +60,16 @@ def create_sqlite_engine(path: Path | None = None, *, echo: bool = False) -> Eng
     Hint: ``@event.listens_for(engine, "connect")`` receives
     ``(dbapi_connection, connection_record)``; use ``dbapi_connection.cursor()``.
     """
-    raise NotImplementedError("TODO: implement this task")
+    url = "sqlite://" if path is None else f"sqlite:///{path}"
+    engine = create_engine(url, echo=echo)
+
+    @event.listens_for(engine, "connect")
+    def _enable_foreign_keys(dbapi_connection: Any, _record: Any) -> None:
+        cursor = dbapi_connection.cursor()
+        cursor.execute("PRAGMA foreign_keys=ON")
+        cursor.close()
+
+    return engine
 
 
 # ---------------------------------------------------------------------------
@@ -77,7 +86,12 @@ def execute_in_transaction(engine: Engine, statements: Iterable[str]) -> int:
     Hint: ``with engine.begin() as conn:`` commits on normal exit and rolls
     back if the block raises. ``engine.connect()`` does neither for you.
     """
-    raise NotImplementedError("TODO: implement this task")
+    count = 0
+    with engine.begin() as conn:
+        for sql in statements:
+            conn.execute(text(sql))
+            count += 1
+    return count
 
 
 # ---------------------------------------------------------------------------
@@ -97,7 +111,15 @@ def find_user_by_email(conn: Connection, email: str) -> dict[str, Any] | None:
     Hint: ``conn.execute(stmt, {"email": email}).mappings().first()`` gives a
     ``RowMapping`` (or ``None``); ``dict(row)`` turns it into a dict.
     """
-    raise NotImplementedError("TODO: implement this task")
+    row = (
+        conn.execute(
+            text("SELECT id, email, name FROM users WHERE email = :email"),
+            {"email": email},
+        )
+        .mappings()
+        .first()
+    )
+    return dict(row) if row is not None else None
 
 
 # ---------------------------------------------------------------------------
@@ -125,9 +147,30 @@ metadata = MetaData()
 # ``server_default=`` becomes part of the DDL, so the database fills it even for
 # rows inserted by other tools.
 
-pass
-users: Table = None  # type: ignore[assignment]  # TODO: replace with Table(...)
-orders: Table = None  # type: ignore[assignment]  # TODO: replace with Table(...)
+users = Table(
+    "users",
+    metadata,
+    Column("id", Integer, primary_key=True),
+    Column("email", String(255), nullable=False, unique=True),
+    Column("name", String(100), nullable=False),
+    Column("is_active", Boolean, nullable=False, default=True, server_default=true()),
+    Column("created_at", DateTime, nullable=False, server_default=func.now()),
+)
+
+orders = Table(
+    "orders",
+    metadata,
+    Column("id", Integer, primary_key=True),
+    Column(
+        "user_id",
+        Integer,
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    ),
+    Column("amount", Numeric(10, 2), nullable=False),
+    Column("status", String(20), nullable=False, default="new"),
+)
 
 
 # ---------------------------------------------------------------------------
@@ -145,7 +188,11 @@ def insert_users(conn: Connection, rows: Iterable[Mapping[str, Any]]) -> list[in
     makes SQLAlchemy 2.x return the ids of a multi-row insert in input order.
     Then ``.scalars().all()``.
     """
-    raise NotImplementedError("TODO: implement this task")
+    params = [dict(row) for row in rows]
+    if not params:
+        return []
+    stmt = insert(users).returning(users.c.id, sort_by_parameter_order=True)
+    return list(conn.execute(stmt, params).scalars().all())
 
 
 # ---------------------------------------------------------------------------
@@ -162,7 +209,14 @@ def list_active_users(conn: Connection, name_prefix: str | None = None) -> list[
     >>> list_active_users(conn, "A")  # doctest: +SKIP
     [{'id': 1, 'email': 'ann@example.com', 'name': 'Ann'}]
     """
-    raise NotImplementedError("TODO: implement this task")
+    stmt = (
+        select(users.c.id, users.c.email, users.c.name)
+        .where(users.c.is_active.is_(True))
+        .order_by(users.c.id)
+    )
+    if name_prefix is not None:
+        stmt = stmt.where(users.c.name.startswith(name_prefix, autoescape=True))
+    return [dict(row) for row in conn.execute(stmt).mappings()]
 
 
 # ---------------------------------------------------------------------------
@@ -175,7 +229,8 @@ def deactivate_user(conn: Connection, user_id: int) -> bool:
 
     Hint: ``update(users).where(...).values(...)``; the result has ``.rowcount``.
     """
-    raise NotImplementedError("TODO: implement this task")
+    result = conn.execute(update(users).where(users.c.id == user_id).values(is_active=False))
+    return result.rowcount == 1
 
 
 # ---------------------------------------------------------------------------
@@ -188,7 +243,8 @@ def purge_inactive_users(conn: Connection) -> int:
     ``ON DELETE CASCADE`` foreign key from Task 4 (with the PRAGMA from Task 1)
     does it in the database.
     """
-    raise NotImplementedError("TODO: implement this task")
+    result = conn.execute(delete(users).where(users.c.is_active.is_(False)))
+    return result.rowcount
 
 
 # ---------------------------------------------------------------------------
@@ -206,4 +262,9 @@ def upsert_user(conn: Connection, email: str, name: str) -> int:
     ``.returning(users.c.id)``. (PostgreSQL has the same API in
     ``sqlalchemy.dialects.postgresql``.)
     """
-    raise NotImplementedError("TODO: implement this task")
+    stmt = sqlite_insert(users).values(email=email, name=name)
+    stmt = stmt.on_conflict_do_update(
+        index_elements=[users.c.email],
+        set_={"name": stmt.excluded.name},
+    ).returning(users.c.id)
+    return conn.execute(stmt).scalar_one()

@@ -28,7 +28,7 @@ except ImportError:  # Python 3.12: the backport (installed with pydantic)
 # Task 1: Protocol (structural typing) + runtime_checkable
 # ---------------------------------------------------------------------------
 # Make ``Retriever`` usable with ``isinstance()``: decorate the class.
-# (decorator goes here)
+@runtime_checkable
 class Retriever(Protocol):
     """Anything that has a ``retrieve(query: str, k: int = 4) -> list[str]`` method.
 
@@ -42,7 +42,7 @@ class Retriever(Protocol):
     *exists*; it does not check signatures.
     """
 
-    pass
+    def retrieve(self, query: str, k: int = 4) -> list[str]: ...
 
 
 def retrieve_all(sources: Iterable[object], query: str, k: int = 4) -> list[str]:
@@ -53,7 +53,12 @@ def retrieve_all(sources: Iterable[object], query: str, k: int = 4) -> list[str]
     * Concatenate the results, drop duplicates (keep the first occurrence),
       and return at most ``k`` documents.
     """
-    raise NotImplementedError("TODO: implement this task")
+    seen: dict[str, None] = {}
+    for source in sources:
+        if isinstance(source, Retriever):
+            for doc in source.retrieve(query, k):
+                seen.setdefault(doc, None)
+    return list(seen)[:k]
 
 
 # ---------------------------------------------------------------------------
@@ -67,7 +72,7 @@ class HasId(Protocol):
 
 # Write the class header so the repository is generic over ``T``, with ``T``
 # bound to ``HasId``: ``class InMemoryRepository[T: HasId]:``
-class InMemoryRepository:
+class InMemoryRepository[T: HasId]:
     """An in-memory stand-in for a database repository, used in unit tests.
 
     Use PEP 695 syntax (no ``TypeVar``): ``InMemoryRepository[User]`` then
@@ -84,22 +89,26 @@ class InMemoryRepository:
     """
 
     def __init__(self) -> None:
-        pass
+        self._items: dict[int, T] = {}
 
     def add(self, entity: T) -> T:
-        raise NotImplementedError("TODO: implement this task")
+        if entity.id in self._items:
+            raise ValueError(f"duplicate id: {entity.id}")
+        self._items[entity.id] = entity
+        return entity
 
     def get(self, id: int) -> T | None:
-        raise NotImplementedError("TODO: implement this task")
+        return self._items.get(id)
 
     def list(self, where: Callable[[T], bool] | None = None) -> list[T]:
-        raise NotImplementedError("TODO: implement this task")
+        items = self._items.values()
+        return [e for e in items if where(e)] if where else [*items]
 
     def remove(self, id: int) -> bool:
-        raise NotImplementedError("TODO: implement this task")
+        return self._items.pop(id, None) is not None
 
     def __len__(self) -> int:
-        raise NotImplementedError("TODO: implement this task")
+        return len(self._items)
 
 
 # ---------------------------------------------------------------------------
@@ -108,7 +117,7 @@ class InMemoryRepository:
 # Write the header with two type parameters, ``T`` and ``K`` (bound to
 # ``Hashable``), in that order:
 #     def index_by[T, K: Hashable](items: Iterable[T], key: Callable[[T], K]) -> dict[K, T]:
-def index_by(items, key):
+def index_by[T, K: Hashable](items: Iterable[T], key: Callable[[T], K]) -> dict[K, T]:
     """Build ``{key(item): item}``, for example users by email.
 
     * Keep the insertion order.
@@ -119,7 +128,13 @@ def index_by(items, key):
     >>> index_by(["apple", "bob"], key=len)
     {5: 'apple', 3: 'bob'}
     """
-    raise NotImplementedError("TODO: implement this task")
+    result: dict[K, T] = {}
+    for item in items:
+        k = key(item)
+        if k in result:
+            raise ValueError(f"duplicate key: {k!r}")
+        result[k] = item
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -132,7 +147,12 @@ FALSE_STRINGS = frozenset({"0", "false", "no", "off"})
 # knows that ``coerce("1", int)`` is an ``int``, ``coerce("1", float)`` is a
 # ``float``, and ``coerce("on", bool)`` is a ``bool``. Each overload's body is
 # ``...``. Put the ``bool`` overload first (``bool`` is a subclass of ``int``).
-# (your three @overload signatures go here)
+@overload
+def coerce(value: str, to: type[bool]) -> bool: ...
+@overload
+def coerce(value: str, to: type[int]) -> int: ...
+@overload
+def coerce(value: str, to: type[float]) -> float: ...
 def coerce(value: str, to: type[bool] | type[int] | type[float]) -> bool | int | float:
     """Convert a config string to ``bool``, ``int``, or ``float``.
 
@@ -145,7 +165,17 @@ def coerce(value: str, to: type[bool] | type[int] | type[float]) -> bool | int |
     The overloads exist only for type checkers. At runtime only this
     implementation runs, but ``typing.get_overloads(coerce)`` lists them.
     """
-    raise NotImplementedError("TODO: implement this task")
+    value = value.strip()
+    if to is bool:
+        lowered = value.lower()
+        if lowered in TRUE_STRINGS:
+            return True
+        if lowered in FALSE_STRINGS:
+            return False
+        raise ValueError(f"not a boolean: {value!r}")
+    if to is int or to is float:
+        return to(value)
+    raise TypeError(f"unsupported target type: {to!r}")
 
 
 # ---------------------------------------------------------------------------
@@ -159,7 +189,7 @@ def is_str_list(values: list[object]) -> TypeGuard[list[str]]:
     needed here, not ``TypeIs``, because ``list[str]`` is not a subtype of
     ``list[object]`` (lists are invariant).
     """
-    raise NotImplementedError("TODO: implement this task")
+    return all(isinstance(v, str) for v in values)
 
 
 type JsonScalar = str | int | float | bool | None
@@ -177,7 +207,7 @@ def is_json_scalar(value: object) -> TypeIs[JsonScalar]:
     ``type JsonScalar = ...`` above is a PEP 695 type alias. At runtime it is
     a ``typing.TypeAliasType``, and its ``__value__`` holds the union.
     """
-    raise NotImplementedError("TODO: implement this task")
+    return value is None or isinstance(value, (str, int, float, bool))
 
 
 # ---------------------------------------------------------------------------
@@ -197,7 +227,22 @@ def logged[**P, R](log: list[str]) -> Callable[[Callable[P, R]], Callable[P, R]]
     decorated function, so the wrapper keeps the exact signature for type
     checkers too. ``Callable[..., Any]`` would lose it.
     """
-    raise NotImplementedError("TODO: implement this task")
+    def decorator(func: Callable[P, R]) -> Callable[P, R]:
+        @functools.wraps(func)
+        def wrapper(*args: P.args, **kwargs: P.kwargs) -> R:
+            shown = ", ".join([*map(repr, args), *(f"{k}={v!r}" for k, v in kwargs.items())])
+            call = f"{func.__name__}({shown})"
+            try:
+                result = func(*args, **kwargs)
+            except Exception as exc:
+                log.append(f"{call} raised {type(exc).__name__}")
+                raise
+            log.append(f"{call} -> {result!r}")
+            return result
+
+        return wrapper
+
+    return decorator
 
 
 # ---------------------------------------------------------------------------
@@ -230,4 +275,17 @@ def with_session[S: Session, **P, R](
     "a session first, then whatever parameters ``P`` stands for". The
     result is ``Callable[P, R]``: the same function without the session.
     """
-    raise NotImplementedError("TODO: implement this task")
+    def decorator(func: Callable[Concatenate[S, P], R]) -> Callable[P, R]:
+        @functools.wraps(func)
+        def wrapper(*args: P.args, **kwargs: P.kwargs) -> R:
+            session = factory()
+            try:
+                return func(session, *args, **kwargs)
+            finally:
+                session.close()
+
+        sig = inspect.signature(func)
+        wrapper.__signature__ = sig.replace(parameters=list(sig.parameters.values())[1:])  # type: ignore[attr-defined]
+        return wrapper
+
+    return decorator

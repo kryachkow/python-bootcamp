@@ -105,10 +105,16 @@ def parse_sort(sort: Annotated[str, Query()] = "id") -> SortSpec:
     >>> parse_sort("-owner")
     SortSpec(field='owner', descending=True)
     """
-    raise NotImplementedError("TODO: implement this task")
+    descending = sort.startswith("-")
+    field = sort.removeprefix("-")
+    if field not in SORTABLE_FIELDS:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, detail=f"Cannot sort by '{field}'")
+    return SortSpec(field, descending)
 
 
-# TODO: implement this task (see the spec above)
+@router.get("/notes")
+def list_notes(spec: Annotated[SortSpec, Depends(parse_sort)]) -> list[dict[str, Any]]:
+    return sorted(NOTES, key=lambda n: n[spec.field], reverse=spec.descending)
 
 
 # ---------------------------------------------------------------------------
@@ -136,10 +142,25 @@ class Pagination:
     dependency.
     """
 
-    # TODO: implement this task
+    def __init__(
+        self,
+        page: Annotated[int, Query(ge=1)] = 1,
+        size: Annotated[int, Query(ge=1, le=50)] = 10,
+    ) -> None:
+        self.page = page
+        self.size = size
+
+    @property
+    def offset(self) -> int:
+        return (self.page - 1) * self.size
+
+    def apply[T](self, items: list[T]) -> list[T]:
+        return items[self.offset : self.offset + self.size]
 
 
-# TODO: implement this task (see the spec above)
+@router.get("/notes/page")
+def page_notes(paging: Annotated[Pagination, Depends()]) -> dict[str, Any]:
+    return {"page": paging.page, "size": paging.size, "total": len(NOTES), "items": paging.apply(NOTES)}
 
 
 # ---------------------------------------------------------------------------
@@ -169,10 +190,26 @@ def get_session() -> Iterator[FakeSession]:
 
     Hint: ``try: yield ... except Exception: ...; raise`` / ``else`` / ``finally``.
     """
-    raise NotImplementedError("TODO: implement this task")
+    SESSION_EVENTS.append("open")
+    session = FakeSession()
+    try:
+        yield session
+    except Exception:
+        session.rollback()
+        raise
+    else:
+        session.commit()
+    finally:
+        session.close()
 
 
-# TODO: implement this task (see the spec above)
+@router.post("/notes", status_code=status.HTTP_201_CREATED)
+def create_note(note: NoteIn, session: Annotated[FakeSession, Depends(get_session)]) -> dict[str, Any]:
+    new = {"id": max((n["id"] for n in NOTES), default=0) + 1, "title": note.title, "owner": note.owner}
+    session.add(new)
+    if any(n["title"] == note.title for n in NOTES):
+        raise HTTPException(status.HTTP_409_CONFLICT, detail=f"Note '{note.title}' already exists")
+    return new
 
 
 # ---------------------------------------------------------------------------
@@ -187,7 +224,13 @@ def get_api_key(x_api_key: Annotated[str | None, Header()] = None) -> str:
     ``detail="Missing API key"`` and the response header
     ``WWW-Authenticate: ApiKey``.
     """
-    raise NotImplementedError("TODO: implement this task")
+    if not x_api_key:
+        raise HTTPException(
+            status.HTTP_401_UNAUTHORIZED,
+            detail="Missing API key",
+            headers={"WWW-Authenticate": "ApiKey"},
+        )
+    return x_api_key
 
 
 def get_current_user(api_key: Annotated[str, Depends(get_api_key)]) -> User:
@@ -199,13 +242,22 @@ def get_current_user(api_key: Annotated[str, Depends(get_api_key)]) -> User:
     Then add ``GET /me`` (below). It returns the current user, for example
     ``{"username": "bob", "is_admin": false}``.
     """
-    raise NotImplementedError("TODO: implement this task")
+    user = API_KEYS.get(api_key)
+    if user is None:
+        raise HTTPException(
+            status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid API key",
+            headers={"WWW-Authenticate": "ApiKey"},
+        )
+    return user
 
 
 CurrentUser = Annotated[User, Depends(get_current_user)]
 
 
-# TODO: implement this task (see the spec above)
+@router.get("/me")
+def read_me(user: CurrentUser) -> User:
+    return user
 
 
 # ---------------------------------------------------------------------------
@@ -222,10 +274,18 @@ def require_admin(user: CurrentUser) -> User:
     ``Depends(require_admin)``. It removes the note and responds ``204``. An
     unknown id gives ``404`` with ``detail=f"Note {note_id} not found"``.
     """
-    raise NotImplementedError("TODO: implement this task")
+    if not user.is_admin:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, detail="Admin privileges required")
+    return user
 
 
-# TODO: implement this task (see the spec above)
+@router.delete("/notes/{note_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_note(note_id: int, _admin: Annotated[User, Depends(require_admin)]) -> None:
+    for index, note in enumerate(NOTES):
+        if note["id"] == note_id:
+            del NOTES[index]
+            return
+    raise HTTPException(status.HTTP_404_NOT_FOUND, detail=f"Note {note_id} not found")
 
 
 # ---------------------------------------------------------------------------
@@ -237,7 +297,7 @@ def record_audit(request: Request, user: CurrentUser) -> None:
 
     This dependency returns nothing. It runs only for its side effect.
     """
-    raise NotImplementedError("TODO: implement this task")
+    AUDIT_LOG.append(f"{user.username} {request.method} {request.url.path}")
 
 
 # Create ``admin_router`` with ``prefix="/admin"``, ``tags=["admin"]``, and
@@ -251,7 +311,16 @@ def record_audit(request: Request, user: CurrentUser) -> None:
 # Within one request, FastAPI runs ``get_current_user`` once and caches the
 # result, even though both dependencies need it.
 #
-admin_router = APIRouter()
+admin_router = APIRouter(
+    prefix="/admin",
+    tags=["admin"],
+    dependencies=[Depends(require_admin), Depends(record_audit)],
+)
+
+
+@admin_router.get("/stats")
+def admin_stats() -> dict[str, int]:
+    return {"notes": len(NOTES), "api_keys": len(API_KEYS)}
 
 
 def create_app() -> FastAPI:
@@ -281,4 +350,14 @@ def override_user(app: FastAPI, user: User) -> Iterator[None]:
         with override_user(app, User(username="carol", is_admin=True)):
             client.get("/admin/stats")   # 200
     """
-    raise NotImplementedError("TODO: implement this task")
+    overrides = app.dependency_overrides
+    missing = object()
+    previous = overrides.get(get_current_user, missing)
+    overrides[get_current_user] = lambda: user
+    try:
+        yield
+    finally:
+        if previous is missing:
+            overrides.pop(get_current_user, None)
+        else:
+            overrides[get_current_user] = previous

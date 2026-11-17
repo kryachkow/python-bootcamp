@@ -57,7 +57,20 @@ ORDERS = [
 # * Unknown city -> return "Unknown city: <city>" (a string the model can read,
 #   not an exception).
 #
-get_weather = None  # TODO: replace with the @tool-decorated function
+@tool(parse_docstring=True)
+def get_weather(city: str, unit: Literal["celsius", "fahrenheit"] = "celsius") -> str:
+    """Get the current temperature in a city.
+
+    Args:
+        city: City name, e.g. Kyiv.
+        unit: Temperature unit.
+    """
+    celsius = TEMPERATURES_C.get(city.lower())
+    if celsius is None:
+        return f"Unknown city: {city}"
+    if unit == "fahrenheit":
+        return f"{city}: {celsius * 9 / 5 + 32:.1f}°F"
+    return f"{city}: {celsius:.1f}°C"
 
 
 # ---------------------------------------------------------------------------
@@ -86,7 +99,23 @@ def build_search_orders_tool() -> StructuredTool:
     * Invalid arguments (e.g. ``limit=0``, ``status="lost"``) are rejected
       by the schema: ``tool.invoke`` raises ``pydantic.ValidationError``.
     """
-    raise NotImplementedError("TODO: implement this task")
+    def search_orders(
+        customer_email: str | None = None, status: str | None = None, limit: int = 10
+    ) -> str:
+        found = [
+            o
+            for o in ORDERS
+            if (customer_email is None or o["customer_email"] == customer_email)
+            and (status is None or o["status"] == status)
+        ]
+        return json.dumps(found[:limit])
+
+    return StructuredTool.from_function(
+        func=search_orders,
+        name="search_orders",
+        description="Search customer orders by e-mail and/or status.",
+        args_schema=SearchOrdersInput,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -101,7 +130,12 @@ def tool_specs(tools: Sequence[BaseTool]) -> list[dict[str, Any]]:
     * Providers reject duplicate tool names, so two tools with the same
       ``.name`` raise ``ValueError`` naming the duplicate.
     """
-    raise NotImplementedError("TODO: implement this task")
+    seen: set[str] = set()
+    for t in tools:
+        if t.name in seen:
+            raise ValueError(f"duplicate tool name: {t.name}")
+        seen.add(t.name)
+    return [convert_to_openai_tool(t) for t in tools]
 
 
 # ---------------------------------------------------------------------------
@@ -120,7 +154,15 @@ def execute_tool_call(tool_call: ToolCall, tools_by_name: Mapping[str, BaseTool]
       recover). Return ``ToolMessage(content=f"Error: unknown tool '{name}'",
       tool_call_id=<id>, name=<name>, status="error")``.
     """
-    raise NotImplementedError("TODO: implement this task")
+    selected = tools_by_name.get(tool_call["name"])
+    if selected is None:
+        return ToolMessage(
+            content=f"Error: unknown tool '{tool_call['name']}'",
+            tool_call_id=tool_call["id"],
+            name=tool_call["name"],
+            status="error",
+        )
+    return selected.invoke(tool_call)
 
 
 # ---------------------------------------------------------------------------
@@ -145,7 +187,18 @@ def build_divide_tool() -> StructuredTool:
     Hint: ``StructuredTool.from_function(func, name=..., description=...,
     handle_tool_error=..., handle_validation_error=...)``.
     """
-    raise NotImplementedError("TODO: implement this task")
+    def divide(a: float, b: float) -> float:
+        if b == 0:
+            raise ToolException("cannot divide by zero")
+        return a / b
+
+    return StructuredTool.from_function(
+        func=divide,
+        name="divide",
+        description="Divide a by b.",
+        handle_tool_error=lambda e: f"Tool error: {e}",
+        handle_validation_error=lambda e: "Tool error: invalid arguments",
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -186,7 +239,22 @@ def run_agent(
        still asks for tools on the last allowed call, raise
        ``MaxIterationsError`` (never loop forever, never run those tools).
     """
-    raise NotImplementedError("TODO: implement this task")
+    tools_by_name = {t.name: t for t in tools}
+    messages: list[BaseMessage] = []
+    if system_prompt is not None:
+        messages.append(SystemMessage(system_prompt))
+    messages.append(HumanMessage(question))
+
+    for n in range(1, max_iterations + 1):
+        reply = model.invoke(messages)
+        messages.append(reply)
+        if not reply.tool_calls:
+            return AgentResult(answer=reply.text, messages=messages, model_calls=n)
+        if n == max_iterations:
+            break
+        for tool_call in reply.tool_calls:
+            messages.append(execute_tool_call(tool_call, tools_by_name))
+    raise MaxIterationsError(f"no final answer after {max_iterations} model calls")
 
 
 # ---------------------------------------------------------------------------
@@ -209,4 +277,21 @@ async def arun_agent(
     * Unknown tools produce the same error ToolMessage as Task 4.
     * Same ``max_iterations`` rule and ``MaxIterationsError`` as Task 6.
     """
-    raise NotImplementedError("TODO: implement this task")
+    tools_by_name = {t.name: t for t in tools}
+    messages: list[BaseMessage] = [HumanMessage(question)]
+
+    async def run_one(tool_call: ToolCall) -> ToolMessage:
+        selected = tools_by_name.get(tool_call["name"])
+        if selected is None:
+            return execute_tool_call(tool_call, tools_by_name)
+        return await selected.ainvoke(tool_call)
+
+    for n in range(1, max_iterations + 1):
+        reply = await model.ainvoke(messages)
+        messages.append(reply)
+        if not reply.tool_calls:
+            return AgentResult(answer=reply.text, messages=messages, model_calls=n)
+        if n == max_iterations:
+            break
+        messages.extend(await asyncio.gather(*(run_one(tc) for tc in reply.tool_calls)))
+    raise MaxIterationsError(f"no final answer after {max_iterations} model calls")

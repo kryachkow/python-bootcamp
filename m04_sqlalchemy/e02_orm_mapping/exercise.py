@@ -67,7 +67,16 @@ class Base(DeclarativeBase):
     ``X | None`` makes a column nullable; plain ``X`` makes it ``NOT NULL``.
     """
 
-    pass
+    type_annotation_map = {
+        dict[str, Any]: JSON,
+        datetime: DateTime(timezone=True),
+        ProductStatus: Enum(
+            ProductStatus,
+            native_enum=False,
+            length=20,
+            values_callable=lambda e: [m.value for m in e],
+        ),
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -85,7 +94,8 @@ class TimestampMixin:
     Use it as ``class User(TimestampMixin, Base): ...``.
     """
 
-    pass
+    created_at: Mapped[datetime] = mapped_column(server_default=func.now())
+    updated_at: Mapped[datetime | None] = mapped_column(onupdate=func.now())
 
 
 # ---------------------------------------------------------------------------
@@ -103,9 +113,17 @@ class TimestampMixin:
 # (use ``!r`` for the email). Do not touch other attributes in ``__repr__``:
 # a repr that triggers lazy loads is a classic source of surprise queries.
 
-pass
-class User:  # TODO: replace with the mapped User model
-    pass
+class User(TimestampMixin, Base):
+    __tablename__ = "users"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    email: Mapped[str] = mapped_column(String(255), unique=True, index=True)
+    full_name: Mapped[str] = mapped_column(String(100))
+    nickname: Mapped[str | None] = mapped_column(String(50))
+    is_active: Mapped[bool] = mapped_column(default=True, server_default=true())
+
+    def __repr__(self) -> str:
+        return f"User(id={self.id}, email={self.email!r})"
 
 
 # ---------------------------------------------------------------------------
@@ -128,9 +146,21 @@ class User:  # TODO: replace with the mapped User model
 #   * CheckConstraint("stock >= 0", name="ck_products_stock_non_negative")
 #   * Index("ix_products_status_name", "status", "name")
 
-pass
-class Product:  # TODO: replace with the mapped Product model
-    pass
+class Product(Base):
+    __tablename__ = "products"
+    __table_args__ = (
+        CheckConstraint("price >= 0", name="ck_products_price_non_negative"),
+        CheckConstraint("stock >= 0", name="ck_products_stock_non_negative"),
+        Index("ix_products_status_name", "status", "name"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    sku: Mapped[str] = mapped_column(String(32), unique=True)
+    name: Mapped[str] = mapped_column(String(200))
+    price: Mapped[Decimal] = mapped_column(Numeric(10, 2))
+    stock: Mapped[int] = mapped_column(default=0, server_default="0")
+    status: Mapped[ProductStatus] = mapped_column(default=ProductStatus.DRAFT)
+    attributes: Mapped[dict[str, Any]] = mapped_column(default=dict)
 
 
 # ---------------------------------------------------------------------------
@@ -146,7 +176,8 @@ def init_db(engine: Engine) -> sessionmaker[Session]:
     In a real service, Alembic migrations create the schema; ``create_all``
     is for tests and scripts.
     """
-    raise NotImplementedError("TODO: implement this task")
+    Base.metadata.create_all(engine)
+    return sessionmaker(bind=engine)
 
 
 # ---------------------------------------------------------------------------
@@ -163,7 +194,14 @@ def create_user(
     * ``session.add(...)``, ``session.commit()``, then ``session.refresh(user)``
       so server-generated values (``id``, ``created_at``) are loaded.
     """
-    raise NotImplementedError("TODO: implement this task")
+    normalised = email.strip().lower()
+    if "@" not in normalised:
+        raise ValueError(f"invalid email: {email!r}")
+    user = User(email=normalised, full_name=full_name, nickname=nickname)
+    session.add(user)
+    session.commit()
+    session.refresh(user)
+    return user
 
 
 # ---------------------------------------------------------------------------
@@ -178,7 +216,10 @@ def get_user_or_raise(session: Session, user_id: int) -> User:
     queries the database on a miss. (``session.query(...)`` is the legacy
     1.x API; do not use it.)
     """
-    raise NotImplementedError("TODO: implement this task")
+    user = session.get(User, user_id)
+    if user is None:
+        raise LookupError(f"User {user_id} not found")
+    return user
 
 
 # ---------------------------------------------------------------------------
@@ -201,7 +242,16 @@ def add_product(
       failed flush the session refuses all work until it is rolled back, so
       leaving it un-rolled-back breaks the caller's next query.
     """
-    raise NotImplementedError("TODO: implement this task")
+    product = Product(sku=sku, name=name, price=price)
+    if attributes is not None:
+        product.attributes = attributes
+    session.add(product)
+    try:
+        session.commit()
+    except IntegrityError:
+        session.rollback()
+        raise
+    return product
 
 
 # ---------------------------------------------------------------------------
@@ -218,4 +268,9 @@ def set_product_attribute(session: Session, product_id: int, key: str, value: An
       (``{**old, key: value}``). (``sqlalchemy.ext.mutable.MutableDict`` is the
       alternative when you control the model.)
     """
-    raise NotImplementedError("TODO: implement this task")
+    product = session.get(Product, product_id)
+    if product is None:
+        raise LookupError(f"Product {product_id} not found")
+    product.attributes = {**product.attributes, key: value}
+    session.commit()
+    return product

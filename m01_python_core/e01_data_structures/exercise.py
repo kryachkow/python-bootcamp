@@ -30,7 +30,7 @@ def count_words(text: str) -> dict[str, int]:
 
     Hint: ``re.findall`` and ``collections.Counter``.
     """
-    raise NotImplementedError("TODO: implement this task")
+    return dict(Counter(re.findall(r"[a-z0-9']+", text.lower())))
 
 
 # ---------------------------------------------------------------------------
@@ -48,7 +48,11 @@ def group_by_first_letter(words: Iterable[str]) -> dict[str, list[str]]:
 
     Hint: ``collections.defaultdict(list)``.
     """
-    raise NotImplementedError("TODO: implement this task")
+    groups: defaultdict[str, list[str]] = defaultdict(list)
+    for word in words:
+        if word:
+            groups[word[0].lower()].append(word)
+    return dict(groups)
 
 
 # ---------------------------------------------------------------------------
@@ -63,7 +67,13 @@ def flatten(nested: Iterable[Any]) -> list[Any]:
     >>> flatten([1, [2, (3, [4])], "ab", [[[]]]])
     [1, 2, 3, 4, 'ab']
     """
-    raise NotImplementedError("TODO: implement this task")
+    result: list[Any] = []
+    for item in nested:
+        if isinstance(item, (list, tuple)):
+            result.extend(flatten(item))
+        else:
+            result.append(item)
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -81,7 +91,9 @@ def top_n(scores: dict[str, int], n: int) -> list[tuple[str, int]]:
 
     Hint: ``sorted(..., key=lambda kv: (-kv[1], kv[0]))``.
     """
-    raise NotImplementedError("TODO: implement this task")
+    if n <= 0:
+        return []
+    return sorted(scores.items(), key=lambda kv: (-kv[1], kv[0]))[:n]
 
 
 # ---------------------------------------------------------------------------
@@ -95,7 +107,7 @@ def unique_preserve_order[T: Hashable](items: Iterable[T]) -> list[T]:
 
     Hint: since Python 3.7, a ``dict`` keeps keys in insertion order.
     """
-    raise NotImplementedError("TODO: implement this task")
+    return list(dict.fromkeys(items))
 
 
 # ---------------------------------------------------------------------------
@@ -109,7 +121,10 @@ def invert_dict[K, V: Hashable](mapping: dict[K, V]) -> dict[V, list[K]]:
     >>> invert_dict({"a": 1, "b": 2, "c": 1})
     {1: ['a', 'c'], 2: ['b']}
     """
-    raise NotImplementedError("TODO: implement this task")
+    inverted: dict[V, list[K]] = {}
+    for key, value in mapping.items():
+        inverted.setdefault(value, []).append(key)
+    return inverted
 
 
 # ---------------------------------------------------------------------------
@@ -125,7 +140,13 @@ def merge_intervals(intervals: Iterable[tuple[int, int]]) -> list[tuple[int, int
     >>> merge_intervals([(5, 7), (1, 3), (2, 4)])
     [(1, 4), (5, 7)]
     """
-    raise NotImplementedError("TODO: implement this task")
+    merged: list[tuple[int, int]] = []
+    for start, end in sorted(intervals):
+        if merged and start <= merged[-1][1]:
+            merged[-1] = (merged[-1][0], max(merged[-1][1], end))
+        else:
+            merged.append((start, end))
+    return merged
 
 
 # ---------------------------------------------------------------------------
@@ -144,7 +165,21 @@ def moving_average(values: Iterable[float], window: int) -> Iterator[float]:
     Hint: ``collections.deque(maxlen=window)``. To raise eagerly, check the
     argument in this function and return an inner generator.
     """
-    raise NotImplementedError("TODO: implement this task")
+    if window < 1:
+        raise ValueError("window must be >= 1")
+
+    def _gen() -> Iterator[float]:
+        buf: deque[float] = deque(maxlen=window)
+        total = 0.0
+        for v in values:
+            if len(buf) == window:
+                total -= buf[0]
+            buf.append(v)
+            total += v
+            if len(buf) == window:
+                yield total / window
+
+    return _gen()
 
 
 # ---------------------------------------------------------------------------
@@ -167,13 +202,19 @@ class LRUCache:
         if capacity < 1:
             raise ValueError("capacity must be >= 1")
         self.capacity = capacity
-        pass
+        self._data: OrderedDict[Hashable, Any] = OrderedDict()
 
     def get(self, key: Hashable) -> Any | None:
-        raise NotImplementedError("TODO: implement this task")
+        if key not in self._data:
+            return None
+        self._data.move_to_end(key)
+        return self._data[key]
 
     def put(self, key: Hashable, value: Any) -> None:
-        raise NotImplementedError("TODO: implement this task")
+        self._data[key] = value
+        self._data.move_to_end(key)
+        if len(self._data) > self.capacity:
+            self._data.popitem(last=False)
 
     def __len__(self) -> int:
-        raise NotImplementedError("TODO: implement this task")
+        return len(self._data)

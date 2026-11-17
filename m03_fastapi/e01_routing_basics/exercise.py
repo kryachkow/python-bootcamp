@@ -50,7 +50,14 @@ router = APIRouter()
 #   parameter contain slashes. Return ``{"file_path": file_path}``, so
 #   ``/files/reports/2024/q1.csv`` gives ``{"file_path": "reports/2024/q1.csv"}``.
 #
-# TODO: implement this task (see the spec above)
+@router.get("/items/{item_id}")
+def read_item(item_id: int) -> dict[str, int]:
+    return {"item_id": item_id}
+
+
+@router.get("/files/{file_path:path}")
+def read_file(file_path: str) -> dict[str, str]:
+    return {"file_path": file_path}
 
 
 # ---------------------------------------------------------------------------
@@ -71,7 +78,9 @@ class Provider(StrEnum):
 # * An unknown provider such as ``/providers/cohere`` gives ``422``.
 #   FastAPI validates enum values for you, and the docs list the allowed values.
 #
-# TODO: implement this task (see the spec above)
+@router.get("/providers/{provider}")
+def read_provider(provider: Provider) -> dict[str, Any]:
+    return {"provider": provider.value, "local": provider is Provider.OLLAMA}
 
 
 # ---------------------------------------------------------------------------
@@ -91,7 +100,20 @@ class Provider(StrEnum):
 # Example: ``GET /documents?q=FASTAPI&limit=5`` returns
 # ``{"total": 1, "items": [{"id": 1, "title": "FastAPI tutorial", ...}]}``.
 #
-# TODO: implement this task (see the spec above)
+@router.get("/documents")
+def list_documents(
+    q: str | None = None,
+    include_archived: bool = False,
+    limit: int = 10,
+    offset: int = 0,
+) -> dict[str, Any]:
+    matches = [
+        doc
+        for doc in DOCUMENTS
+        if (include_archived or not doc["archived"])
+        and (q is None or q.lower() in doc["title"].lower())
+    ]
+    return {"total": len(matches), "items": matches[offset : offset + limit]}
 
 
 # ---------------------------------------------------------------------------
@@ -113,7 +135,15 @@ class Provider(StrEnum):
 # Hint: a ``list[...]`` parameter without ``Query()`` would be read from the
 # request body, not from the query string.
 #
-# TODO: implement this task (see the spec above)
+@router.get("/tags/match")
+def match_tags(
+    tags: Annotated[list[str], Query(alias="tag")],
+    mode: Literal["any", "all"] = "any",
+) -> dict[str, Any]:
+    wanted = set(tags)
+    check = wanted.issubset if mode == "all" else wanted.intersection
+    ids = [doc["id"] for doc in DOCUMENTS if check(doc["tags"])]
+    return {"tags": tags, "mode": mode, "ids": ids}
 
 
 # ---------------------------------------------------------------------------
@@ -129,7 +159,18 @@ class Provider(StrEnum):
 # Use ``status_code=`` on the decorator and the ``fastapi.status`` constants,
 # not bare numbers.
 #
-# TODO: implement this task (see the spec above)
+@router.post("/reindex", status_code=status.HTTP_202_ACCEPTED)
+def reindex() -> dict[str, str]:
+    return {"status": "accepted"}
+
+
+@router.delete("/documents/{doc_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_document(doc_id: int) -> None:
+    for index, doc in enumerate(DOCUMENTS):
+        if doc["id"] == doc_id:
+            del DOCUMENTS[index]
+            return
+    raise HTTPException(status.HTTP_404_NOT_FOUND, detail=f"Document {doc_id} not found")
 
 
 # ---------------------------------------------------------------------------
@@ -148,7 +189,19 @@ class Provider(StrEnum):
 #
 # Then include ``users_router`` in the app (see ``create_app``).
 #
-users_router = APIRouter()
+users_router = APIRouter(prefix="/users", tags=["users"])
+
+
+@users_router.get("/me")
+def read_me() -> dict[str, Any]:
+    return USERS[CURRENT_USER_ID]
+
+
+@users_router.get("/{user_id}")
+def read_user(user_id: int) -> dict[str, Any]:
+    if user_id not in USERS:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail=f"User {user_id} not found")
+    return USERS[user_id]
 
 
 # ---------------------------------------------------------------------------
@@ -162,7 +215,9 @@ users_router = APIRouter()
 #   include that router in the app. ``/api/v1/users/me`` and ``/users/me``
 #   must both work.
 #
-# TODO: implement this task (see the spec above)
+@router.get("/health", include_in_schema=False)
+def health() -> dict[str, str]:
+    return {"status": "ok"}
 
 
 def create_app() -> FastAPI:
@@ -170,7 +225,9 @@ def create_app() -> FastAPI:
     app = FastAPI(title="Routing basics")
     app.include_router(router)
     # Task 6: include ``users_router`` here.
-    # TODO: implement this task
+    app.include_router(users_router)
     # Task 7: serve ``users_router`` under ``/api/v1`` too.
-    # TODO: implement this task
+    api_v1 = APIRouter(prefix="/api/v1")
+    api_v1.include_router(users_router)
+    app.include_router(api_v1)
     return app

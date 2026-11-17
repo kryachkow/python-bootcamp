@@ -50,23 +50,27 @@ class Temperature:
 
     @property
     def celsius(self) -> float:
-        raise NotImplementedError("TODO: implement this task")
+        return self._celsius
 
     @celsius.setter
     def celsius(self, value: float) -> None:
-        raise NotImplementedError("TODO: implement this task")
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            raise TypeError(f"temperature must be a number, got {type(value).__name__}")
+        if value < self.ABSOLUTE_ZERO_C:
+            raise ValueError(f"{value} is below absolute zero")
+        self._celsius = float(value)
 
     @property
     def fahrenheit(self) -> float:
-        raise NotImplementedError("TODO: implement this task")
+        return self.celsius * 9 / 5 + 32
 
     @fahrenheit.setter
     def fahrenheit(self, value: float) -> None:
-        raise NotImplementedError("TODO: implement this task")
+        self.celsius = (value - 32) * 5 / 9
 
     @property
     def kelvin(self) -> float:
-        raise NotImplementedError("TODO: implement this task")
+        return self.celsius - self.ABSOLUTE_ZERO_C
 
 
 # ---------------------------------------------------------------------------
@@ -119,11 +123,11 @@ class Money:
     # -----------------------------------------------------------------------
     def __repr__(self) -> str:
         """Return ``Money('12.50', 'USD')``: the amount as a quoted string."""
-        raise NotImplementedError("TODO: implement this task")
+        return f"Money({str(self.amount)!r}, {self.currency!r})"
 
     def __str__(self) -> str:
         """Return ``12.50 USD``."""
-        raise NotImplementedError("TODO: implement this task")
+        return f"{self.amount} {self.currency}"
 
     def __eq__(self, other: object) -> bool:
         """Two ``Money`` objects are equal if amount and currency are equal.
@@ -133,7 +137,9 @@ class Money:
         operand and then fall back to identity, which makes ``==`` give
         ``False``.
         """
-        raise NotImplementedError("TODO: implement this task")
+        if not isinstance(other, Money):
+            return NotImplemented
+        return (self.amount, self.currency) == (other.amount, other.currency)
 
     def __hash__(self) -> int:
         """Hash the same fields that ``__eq__`` compares.
@@ -141,7 +147,7 @@ class Money:
         A class that defines ``__eq__`` gets ``__hash__ = None`` unless it
         defines ``__hash__`` too. Equal objects must have equal hashes.
         """
-        raise NotImplementedError("TODO: implement this task")
+        return hash((self.amount, self.currency))
 
     # -----------------------------------------------------------------------
     # Task 3: arithmetic operators
@@ -153,7 +159,10 @@ class Money:
         * Any other type: return ``NotImplemented``, so Python raises
           ``TypeError`` for you.
         """
-        raise NotImplementedError("TODO: implement this task")
+        if not isinstance(other, Money):
+            return NotImplemented
+        self._check_currency(other)
+        return Money(self.amount + other.amount, self.currency)
 
     def __radd__(self, other: object) -> Money:
         """Support ``sum(list_of_money)``.
@@ -163,15 +172,20 @@ class Money:
         ``self`` when ``other == 0`` (and is not a ``bool``). Otherwise return
         ``NotImplemented``.
         """
-        raise NotImplementedError("TODO: implement this task")
+        if isinstance(other, int) and not isinstance(other, bool) and other == 0:
+            return self
+        return NotImplemented
 
     def __sub__(self, other: Money) -> Money:
         """Same rules as ``__add__``, but subtracts. The result may be negative."""
-        raise NotImplementedError("TODO: implement this task")
+        if not isinstance(other, Money):
+            return NotImplemented
+        self._check_currency(other)
+        return Money(self.amount - other.amount, self.currency)
 
     def __neg__(self) -> Money:
         """``-Money("5", "USD")`` is ``Money("-5", "USD")``."""
-        raise NotImplementedError("TODO: implement this task")
+        return Money(-self.amount, self.currency)
 
     def __mul__(self, factor: int | Decimal) -> Money:
         """Multiply by an ``int`` or ``Decimal``. The result is rounded to cents.
@@ -179,11 +193,13 @@ class Money:
         Return ``NotImplemented`` for ``float``, ``bool``, ``Money``, and
         anything else. ``Money * Money`` has no meaning.
         """
-        raise NotImplementedError("TODO: implement this task")
+        if isinstance(factor, bool) or not isinstance(factor, (int, Decimal)):
+            return NotImplemented
+        return Money(self.amount * factor, self.currency)
 
     def __rmul__(self, factor: int | Decimal) -> Money:
         """Support ``3 * money`` with the same rules as ``__mul__``."""
-        raise NotImplementedError("TODO: implement this task")
+        return self.__mul__(factor)
 
     def _check_currency(self, other: Money) -> None:
         if self.currency != other.currency:
@@ -202,12 +218,15 @@ class Money:
         ``@total_ordering`` on the class derives ``<=``, ``>``, and ``>=``
         from ``__lt__`` and ``__eq__``, so you only write this one.
         """
-        raise NotImplementedError("TODO: implement this task")
+        if not isinstance(other, Money):
+            return NotImplemented
+        self._check_currency(other)
+        return self.amount < other.amount
 
     @classmethod
     def zero(cls, currency: str) -> Money:
         """Return a zero amount: ``Money.zero("usd") == Money("0", "USD")``."""
-        raise NotImplementedError("TODO: implement this task")
+        return cls(0, currency)
 
     @classmethod
     def from_cents(cls, cents: int, currency: str) -> Money:
@@ -216,7 +235,9 @@ class Money:
         Raise ``TypeError`` if ``cents`` is not an ``int`` (``bool`` included).
         Payment providers such as Stripe send amounts this way.
         """
-        raise NotImplementedError("TODO: implement this task")
+        if isinstance(cents, bool) or not isinstance(cents, int):
+            raise TypeError("cents must be an int")
+        return cls(Decimal(cents) / 100, currency)
 
     @classmethod
     def parse(cls, text: str) -> Money:
@@ -228,7 +249,11 @@ class Money:
         Use ``cls(...)``, not ``Money(...)``, so subclasses get instances of
         their own type.
         """
-        raise NotImplementedError("TODO: implement this task")
+        parts = text.split()
+        if len(parts) != 2:
+            raise ValueError(f"expected '<amount> <currency>', got {text!r}")
+        amount, currency = parts
+        return cls(amount, currency)
 
 
 # ---------------------------------------------------------------------------
@@ -270,26 +295,41 @@ class MessageHistory:
 
     def __init__(self, messages: Iterable[tuple[str, str]] = (), *, max_messages: int | None = None) -> None:
         self.max_messages = max_messages
-        pass
+        self._messages: list[Message] = []
+        for role, content in messages:
+            self.append(role, content)
 
     def append(self, role: str, content: str) -> None:
-        raise NotImplementedError("TODO: implement this task")
+        if role not in ROLES:
+            raise ValueError(f"unknown role {role!r}; expected one of {sorted(ROLES)}")
+        self._messages.append(Message(role, content))
+        if self.max_messages is not None and len(self._messages) > self.max_messages:
+            for i, msg in enumerate(self._messages):
+                if msg.role != "system":
+                    del self._messages[i]
+                    break
+            else:
+                del self._messages[0]
 
     def __len__(self) -> int:
-        raise NotImplementedError("TODO: implement this task")
+        return len(self._messages)
 
     @overload
     def __getitem__(self, index: int) -> Message: ...
     @overload
     def __getitem__(self, index: slice) -> MessageHistory: ...
     def __getitem__(self, index: int | slice) -> Message | MessageHistory:
-        raise NotImplementedError("TODO: implement this task")
+        if isinstance(index, slice):
+            return type(self)(self._messages[index], max_messages=self.max_messages)
+        return self._messages[index]
 
     def __iter__(self) -> Iterator[Message]:
-        raise NotImplementedError("TODO: implement this task")
+        return iter(self._messages)
 
     def __contains__(self, item: object) -> bool:
-        raise NotImplementedError("TODO: implement this task")
+        if isinstance(item, str):
+            return any(m.content == item for m in self._messages)
+        return item in self._messages
 
 
 # ---------------------------------------------------------------------------
@@ -315,7 +355,21 @@ class Notifier(ABC):
     implement both abstract members raise ``TypeError`` when instantiated.
     """
 
-    pass
+    @property
+    @abstractmethod
+    def channel(self) -> str: ...
+
+    @abstractmethod
+    def send(self, recipient: str, message: str) -> str: ...
+
+    def notify_all(self, recipients: Iterable[str], message: str) -> dict[str, str]:
+        results: dict[str, str] = {}
+        for recipient in recipients:
+            try:
+                results[recipient] = self.send(recipient, message)
+            except ValueError as exc:
+                results[recipient] = f"error: {exc}"
+        return results
 
 
 class EmailNotifier(Notifier):
@@ -330,10 +384,12 @@ class EmailNotifier(Notifier):
 
     @property
     def channel(self) -> str:
-        raise NotImplementedError("TODO: implement this task")
+        return "email"
 
     def send(self, recipient: str, message: str) -> str:
-        raise NotImplementedError("TODO: implement this task")
+        if "@" not in recipient:
+            raise ValueError(f"invalid email address: {recipient!r}")
+        return f"email from {self.sender} to {recipient}: {message}"
 
 
 class SmsNotifier(Notifier):
@@ -350,10 +406,14 @@ class SmsNotifier(Notifier):
 
     @property
     def channel(self) -> str:
-        raise NotImplementedError("TODO: implement this task")
+        return "sms"
 
     def send(self, recipient: str, message: str) -> str:
-        raise NotImplementedError("TODO: implement this task")
+        if not (recipient.startswith("+") and recipient[1:].isdigit()):
+            raise ValueError(f"invalid phone number: {recipient!r}")
+        if len(message) > self.MAX_LENGTH:
+            message = message[: self.MAX_LENGTH - 3] + "..."
+        return f"sms to {recipient}: {message}"
 
 
 # ---------------------------------------------------------------------------
@@ -385,10 +445,11 @@ class TimestampMixin:
     """
 
     def __init__(self, *, created_at: datetime | None = None, **kwargs: Any) -> None:
-        raise NotImplementedError("TODO: implement this task")
+        self.created_at = created_at if created_at is not None else datetime.now(UTC)
+        super().__init__(**kwargs)
 
     def to_dict(self) -> dict[str, Any]:
-        raise NotImplementedError("TODO: implement this task")
+        return {**super().to_dict(), "created_at": self.created_at.isoformat()}  # type: ignore[misc]
 
 
 class SoftDeleteMixin:
@@ -404,17 +465,21 @@ class SoftDeleteMixin:
     """
 
     def __init__(self, *, deleted_at: datetime | None = None, **kwargs: Any) -> None:
-        raise NotImplementedError("TODO: implement this task")
+        self.deleted_at = deleted_at
+        super().__init__(**kwargs)
 
     @property
     def is_deleted(self) -> bool:
-        raise NotImplementedError("TODO: implement this task")
+        return self.deleted_at is not None
 
     def soft_delete(self, when: datetime) -> None:
-        raise NotImplementedError("TODO: implement this task")
+        if self.is_deleted:
+            raise RuntimeError("already deleted")
+        self.deleted_at = when
 
     def to_dict(self) -> dict[str, Any]:
-        raise NotImplementedError("TODO: implement this task")
+        deleted = self.deleted_at.isoformat() if self.deleted_at else None
+        return {**super().to_dict(), "deleted_at": deleted}  # type: ignore[misc]
 
 
 class Article(TimestampMixin, SoftDeleteMixin, Model):
@@ -430,10 +495,11 @@ class Article(TimestampMixin, SoftDeleteMixin, Model):
     """
 
     def __init__(self, *, title: str, **kwargs: Any) -> None:
-        raise NotImplementedError("TODO: implement this task")
+        self.title = title
+        super().__init__(**kwargs)
 
     def to_dict(self) -> dict[str, Any]:
-        raise NotImplementedError("TODO: implement this task")
+        return {**super().to_dict(), "title": self.title}
 
 
 # ---------------------------------------------------------------------------
@@ -462,34 +528,44 @@ class Vector:
     (3.0, 5.0)
     """
 
-    pass
+    __slots__ = ("_components",)
 
     def __init__(self, *components: float) -> None:
-        raise NotImplementedError("TODO: implement this task")
+        if not components:
+            raise ValueError("a vector needs at least one component")
+        self._components = tuple(float(c) for c in components)
 
     def __repr__(self) -> str:
-        raise NotImplementedError("TODO: implement this task")
+        return f"Vector({', '.join(map(repr, self._components))})"
 
     def __len__(self) -> int:
-        raise NotImplementedError("TODO: implement this task")
+        return len(self._components)
 
     def __iter__(self) -> Iterator[float]:
-        raise NotImplementedError("TODO: implement this task")
+        return iter(self._components)
 
     def __eq__(self, other: object) -> bool:
-        raise NotImplementedError("TODO: implement this task")
+        if not isinstance(other, Vector):
+            return NotImplemented
+        return self._components == other._components
 
     def __hash__(self) -> int:
-        raise NotImplementedError("TODO: implement this task")
+        return hash(self._components)
 
     def __abs__(self) -> float:
-        raise NotImplementedError("TODO: implement this task")
+        return math.hypot(*self._components)
 
     def __bool__(self) -> bool:
-        raise NotImplementedError("TODO: implement this task")
+        return any(self._components)
 
     def __matmul__(self, other: Vector) -> float:
-        raise NotImplementedError("TODO: implement this task")
+        if not isinstance(other, Vector):
+            return NotImplemented
+        if len(self) != len(other):
+            raise ValueError(f"dimension mismatch: {len(self)} != {len(other)}")
+        return sum(a * b for a, b in zip(self, other, strict=True))
 
     def cosine_similarity(self, other: Vector) -> float:
-        raise NotImplementedError("TODO: implement this task")
+        if not self or not other:
+            raise ValueError("cosine similarity is undefined for a zero vector")
+        return (self @ other) / (abs(self) * abs(other))

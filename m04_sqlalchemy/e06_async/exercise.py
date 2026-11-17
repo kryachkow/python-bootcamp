@@ -71,7 +71,7 @@ def make_session_factory(engine: AsyncEngine) -> async_sessionmaker[AsyncSession
 
     Usage: ``async with factory() as session: ...``.
     """
-    raise NotImplementedError("TODO: implement this task")
+    return async_sessionmaker(engine, expire_on_commit=False)
 
 
 # ---------------------------------------------------------------------------
@@ -86,7 +86,8 @@ async def init_models(engine: AsyncEngine) -> None:
         async with engine.begin() as conn:
             await conn.run_sync(Base.metadata.create_all)
     """
-    raise NotImplementedError("TODO: implement this task")
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
 
 
 # ---------------------------------------------------------------------------
@@ -104,7 +105,16 @@ async def create_conversation(
     * The session comes from a factory with ``expire_on_commit=False``, so the
       returned object's ``id`` and ``messages`` are readable afterwards.
     """
-    raise NotImplementedError("TODO: implement this task")
+    for role, _ in messages:
+        if role not in ROLES:
+            raise ValueError(f"unknown role {role!r}")
+    conversation = Conversation(
+        title=title,
+        messages=[Message(role=role, content=content) for role, content in messages],
+    )
+    session.add(conversation)
+    await session.commit()
+    return conversation
 
 
 # ---------------------------------------------------------------------------
@@ -122,7 +132,12 @@ async def get_conversation(session: AsyncSession, conversation_id: int) -> Conve
     .options(selectinload(Conversation.messages)))``. (``session.get`` also
     accepts ``options=[selectinload(...)]``.)
     """
-    raise NotImplementedError("TODO: implement this task")
+    stmt = (
+        select(Conversation)
+        .where(Conversation.id == conversation_id)
+        .options(selectinload(Conversation.messages))
+    )
+    return await session.scalar(stmt)
 
 
 # ---------------------------------------------------------------------------
@@ -140,7 +155,14 @@ async def add_message(
       (and would load every message just to add one). Create the ``Message``
       with ``conversation_id=`` and ``session.add()`` it.
     """
-    raise NotImplementedError("TODO: implement this task")
+    if role not in ROLES:
+        raise ValueError(f"unknown role {role!r}")
+    if await session.get(Conversation, conversation_id) is None:
+        raise LookupError(f"Conversation {conversation_id} not found")
+    message = Message(conversation_id=conversation_id, role=role, content=content)
+    session.add(message)
+    await session.commit()
+    return message
 
 
 # ---------------------------------------------------------------------------
@@ -154,7 +176,14 @@ async def conversation_summaries(session: AsyncSession) -> list[tuple[str, int]]
     ``result = await session.execute(stmt)``. The ``Result`` is already
     buffered, so iterating it needs no ``await``.
     """
-    raise NotImplementedError("TODO: implement this task")
+    stmt = (
+        select(Conversation.title, func.count(Message.id))
+        .outerjoin(Conversation.messages)
+        .group_by(Conversation.id, Conversation.title)
+        .order_by(Conversation.title)
+    )
+    result = await session.execute(stmt)
+    return [tuple(row) for row in result]
 
 
 # ---------------------------------------------------------------------------
@@ -168,7 +197,12 @@ async def delete_conversation(session: AsyncSession, conversation_id: int) -> bo
     because the cascade may need to load related rows, unlike the sync
     ``Session.delete()``. ``add()`` is NOT a coroutine.
     """
-    raise NotImplementedError("TODO: implement this task")
+    conversation = await session.get(Conversation, conversation_id)
+    if conversation is None:
+        return False
+    await session.delete(conversation)
+    await session.commit()
+    return True
 
 
 # ---------------------------------------------------------------------------
@@ -184,7 +218,12 @@ async def fetch_titles_concurrently(
       An ``AsyncSession`` must never be shared by concurrent tasks; it is
       not safe for concurrent use.
     """
-    raise NotImplementedError("TODO: implement this task")
+    async def one(conversation_id: int) -> str | None:
+        async with factory() as session:
+            conversation = await session.get(Conversation, conversation_id)
+            return conversation.title if conversation is not None else None
+
+    return list(await asyncio.gather(*(one(i) for i in conversation_ids)))
 
 
 # ---------------------------------------------------------------------------
@@ -200,4 +239,11 @@ async def stream_contents(session: AsyncSession, conversation_id: int) -> AsyncI
     ``async for value in result``. Useful for exports and for feeding a long
     chat history to an LLM piece by piece.
     """
-    raise NotImplementedError("TODO: implement this task")
+    stmt = (
+        select(Message.content)
+        .where(Message.conversation_id == conversation_id)
+        .order_by(Message.id)
+    )
+    result = await session.stream_scalars(stmt)
+    async for content in result:
+        yield content

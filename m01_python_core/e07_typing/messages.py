@@ -16,7 +16,7 @@ from typing import Any, Literal, NotRequired, Required, TypedDict, get_args, get
 # ---------------------------------------------------------------------------
 # Define ``Role`` as a ``Literal`` of the four chat roles, in this order:
 # "system", "user", "assistant", "tool".
-Role = str
+Role = Literal["system", "user", "assistant", "tool"]
 
 
 class ChatMessage(TypedDict):
@@ -31,7 +31,9 @@ class ChatMessage(TypedDict):
     for type checkers and for ``__required_keys__`` / ``__optional_keys__``.
     """
 
-    pass
+    role: Role
+    content: str
+    name: NotRequired[str]
 
 
 class ToolCall(TypedDict, total=False):
@@ -42,7 +44,9 @@ class ToolCall(TypedDict, total=False):
     ``arguments: dict[str, Any]`` optional.
     """
 
-    pass
+    id: Required[str]
+    name: Required[str]
+    arguments: dict[str, Any]
 
 
 def validate_message(data: Mapping[str, object]) -> ChatMessage:
@@ -65,4 +69,17 @@ def validate_message(data: Mapping[str, object]) -> ChatMessage:
     This is a tiny version of what Pydantic's ``TypeAdapter(ChatMessage)``
     does for you.
     """
-    raise NotImplementedError("TODO: implement this task")
+    required, optional = ChatMessage.__required_keys__, ChatMessage.__optional_keys__
+    for key in sorted(required):
+        if key not in data:
+            raise ValueError(f"missing key: {key}")
+    unknown = set(data) - required - optional
+    if unknown:
+        raise ValueError(f"unknown key(s): {', '.join(sorted(unknown))}")
+    if data["role"] not in get_args(Role):
+        raise ValueError(f"invalid role: {data['role']!r}")
+    hints = get_type_hints(ChatMessage)
+    for key, value in data.items():
+        if key != "role" and not isinstance(value, hints[key]):
+            raise TypeError(f"{key} must be {hints[key].__name__}")
+    return dict(data)  # type: ignore[return-value]

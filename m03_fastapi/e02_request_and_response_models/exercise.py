@@ -94,13 +94,18 @@ router = APIRouter()
 #
 # Hint: ``Field(min_length=..., max_length=..., pattern=...)``.
 #
-# TODO: replace the placeholder classes below with the real models
 class UserIn(BaseModel):
-    pass
+    username: str = Field(min_length=3, max_length=32, pattern=USERNAME_PATTERN)
+    email: str = Field(pattern=EMAIL_PATTERN)
+    password: SecretStr = Field(min_length=8)
+    full_name: str | None = None
 
 
 class UserOut(BaseModel):
-    pass
+    id: int
+    username: str
+    email: str
+    full_name: str | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -119,7 +124,18 @@ class UserOut(BaseModel):
 # * An invalid body (for example a short password) gives ``422``. FastAPI
 #   does this for you.
 #
-# TODO: implement this task (see the spec above)
+@router.post("/users", response_model=UserOut, status_code=status.HTTP_201_CREATED)
+def create_user(user: UserIn, response: Response) -> UserRecord:
+    if store.username_taken(user.username):
+        raise HTTPException(status.HTTP_409_CONFLICT, detail=f"Username '{user.username}' is already taken")
+    record = store.add(
+        username=user.username,
+        email=user.email,
+        password=user.password.get_secret_value(),
+        full_name=user.full_name,
+    )
+    response.headers["Location"] = f"/users/{record.id}"
+    return record
 
 
 # ---------------------------------------------------------------------------
@@ -133,7 +149,12 @@ class UserOut(BaseModel):
 # * Return the user as ``UserOut`` with ``response_model_exclude_none=True``,
 #   so a user without ``full_name`` comes back without that key at all.
 #
-# TODO: implement this task (see the spec above)
+@router.get("/users/{user_id}", response_model=UserOut, response_model_exclude_none=True)
+def read_user(user_id: Annotated[int, Path(ge=1)]) -> UserRecord:
+    record = store.get(user_id)
+    if record is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail=f"User {user_id} not found")
+    return record
 
 
 # ---------------------------------------------------------------------------
@@ -149,7 +170,13 @@ class UserOut(BaseModel):
 #
 # This route does *not* exclude ``None``: ``full_name`` is present (maybe ``null``).
 #
-# TODO: implement this task (see the spec above)
+@router.get("/users", response_model=list[UserOut])
+def list_users(
+    q: Annotated[str | None, Query(max_length=50)] = None,
+    limit: Annotated[int, Query(ge=1, le=100)] = 20,
+) -> list[UserRecord]:
+    users = [u for u in store.all() if q is None or q in u.username]
+    return users[:limit]
 
 
 # ---------------------------------------------------------------------------
@@ -167,7 +194,18 @@ class UserOut(BaseModel):
 # * Otherwise store ``hash_password(new_password)`` on the record and respond
 #   ``204 No Content``.
 #
-# TODO: implement this task (see the spec above)
+@router.post("/users/{user_id}/password", status_code=status.HTTP_204_NO_CONTENT)
+def change_password(
+    user_id: Annotated[int, Path(ge=1)],
+    old_password: Annotated[str, Body()],
+    new_password: Annotated[str, Body(min_length=8)],
+) -> None:
+    record = store.get(user_id)
+    if record is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail=f"User {user_id} not found")
+    if hash_password(old_password) != record.hashed_password:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, detail="Old password is incorrect")
+    record.hashed_password = hash_password(new_password)
 
 
 # ---------------------------------------------------------------------------
@@ -185,13 +223,16 @@ class UserOut(BaseModel):
 #   * ``temperature: float = 0.7``, between 0.0 and 2.0 inclusive
 #   * ``max_tokens: int | None = None``, ``>= 1`` when given
 #
-# TODO: replace the placeholder classes below with the real models
 class ChatMessage(BaseModel):
-    pass
+    role: Literal["system", "user", "assistant"]
+    content: str = Field(min_length=1)
 
 
 class ChatRequest(BaseModel):
-    pass
+    model: str = "fake-gpt"
+    messages: list[ChatMessage] = Field(min_length=1)
+    temperature: float = Field(default=0.7, ge=0.0, le=2.0)
+    max_tokens: int | None = Field(default=None, ge=1)
 
 
 class Usage(BaseModel):
@@ -229,7 +270,25 @@ class ChatResponse(BaseModel):
 #   * The response ``model`` echoes the request's model, and ``message`` has
 #     ``role="assistant"``.
 #
-# TODO: implement this task (see the spec above)
+@router.post("/chat/completions")
+def chat_completions(request: ChatRequest) -> ChatResponse:
+    user_messages = [m for m in request.messages if m.role == "user"]
+    if not user_messages:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, detail="At least one user message is required")
+    reply = f"You said: {user_messages[-1].content}"
+    if request.max_tokens is not None:
+        reply = " ".join(reply.split()[: request.max_tokens])
+    prompt_tokens = sum(len(m.content.split()) for m in request.messages)
+    completion_tokens = len(reply.split())
+    return ChatResponse(
+        model=request.model,
+        message=ChatMessage(role="assistant", content=reply),
+        usage=Usage(
+            prompt_tokens=prompt_tokens,
+            completion_tokens=completion_tokens,
+            total_tokens=prompt_tokens + completion_tokens,
+        ),
+    )
 
 
 def create_app() -> FastAPI:

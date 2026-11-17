@@ -38,25 +38,37 @@ class AppError(Exception):
     one exception handler, instead of one ``try/except`` per route.
     """
 
-    pass
+    code: ClassVar[str] = "app_error"
+    status_code: ClassVar[int] = 500
+
+    def __init__(self, message: str, *, details: Mapping[str, Any] | None = None) -> None:
+        super().__init__(message)
+        self.message = message
+        self.details = dict(details or {})
+
+    def to_dict(self) -> dict[str, Any]:
+        return {"code": self.code, "message": self.message, "details": self.details}
 
 
 class NotFoundError(AppError):
     """``code = "not_found"``, ``status_code = 404``."""
 
-    pass
+    code = "not_found"
+    status_code = 404
 
 
 class InvalidInputError(AppError):
     """``code = "invalid_input"``, ``status_code = 422``."""
 
-    pass
+    code = "invalid_input"
+    status_code = 422
 
 
 class ConflictError(AppError):
     """``code = "conflict"``, ``status_code = 409``."""
 
-    pass
+    code = "conflict"
+    status_code = 409
 
 
 def error_response(exc: Exception) -> tuple[int, dict[str, Any]]:
@@ -67,7 +79,9 @@ def error_response(exc: Exception) -> tuple[int, dict[str, Any]]:
       "Internal server error", "details": {}})``. Never leak the original
       message: it may contain SQL, file paths, or secrets.
     """
-    raise NotImplementedError("TODO: implement this task")
+    if isinstance(exc, AppError):
+        return exc.status_code, exc.to_dict()
+    return 500, {"code": "internal_error", "message": "Internal server error", "details": {}}
 
 
 # ---------------------------------------------------------------------------
@@ -88,7 +102,17 @@ def parse_payload(raw: str | bytes) -> dict[str, Any]:
       ``from None`` hides it from the traceback (``__suppress_context__``).
     * Otherwise return the dict.
     """
-    raise NotImplementedError("TODO: implement this task")
+    try:
+        payload = json.loads(raw)
+    except json.JSONDecodeError as err:
+        raise InvalidInputError("malformed JSON", details={"position": err.pos}) from err
+    if not isinstance(payload, dict):
+        raise InvalidInputError("payload must be a JSON object")
+    try:
+        payload["id"]
+    except KeyError:
+        raise InvalidInputError("missing field: id") from None
+    return payload
 
 
 # ---------------------------------------------------------------------------
@@ -116,7 +140,21 @@ def temporary_env(env: MutableMapping[str, str], **values: str | None) -> Iterat
 
     Hint: ``try: yield ... finally: restore``.
     """
-    raise NotImplementedError("TODO: implement this task")
+    missing = object()
+    saved = {key: env.get(key, missing) for key in values}
+    try:
+        for key, value in values.items():
+            if value is None:
+                env.pop(key, None)
+            else:
+                env[key] = value
+        yield env
+    finally:
+        for key, old in saved.items():
+            if old is missing:
+                env.pop(key, None)
+            else:
+                env[key] = old  # type: ignore[assignment]
 
 
 # ---------------------------------------------------------------------------
@@ -140,10 +178,13 @@ class Timer(ContextDecorator):
 
     def __init__(self, clock: Callable[[], float] = time.perf_counter) -> None:
         self._clock = clock
-        pass
+        self.elapsed: float | None = None
+        self._start = 0.0
 
     def __enter__(self) -> Self:
-        raise NotImplementedError("TODO: implement this task")
+        self.elapsed = None
+        self._start = self._clock()
+        return self
 
     def __exit__(
         self,
@@ -151,7 +192,7 @@ class Timer(ContextDecorator):
         exc: BaseException | None,
         tb: TracebackType | None,
     ) -> None:
-        raise NotImplementedError("TODO: implement this task")
+        self.elapsed = self._clock() - self._start
 
 
 # ---------------------------------------------------------------------------
@@ -176,10 +217,13 @@ class Catch:
     """
 
     def __init__(self, *exc_types: type[BaseException]) -> None:
-        raise NotImplementedError("TODO: implement this task")
+        if not exc_types:
+            raise TypeError("Catch() needs at least one exception type")
+        self.exc_types = exc_types
+        self.exception: BaseException | None = None
 
     def __enter__(self) -> Self:
-        raise NotImplementedError("TODO: implement this task")
+        return self
 
     def __exit__(
         self,
@@ -187,7 +231,10 @@ class Catch:
         exc: BaseException | None,
         tb: TracebackType | None,
     ) -> bool:
-        raise NotImplementedError("TODO: implement this task")
+        if exc_type is not None and issubclass(exc_type, self.exc_types):
+            self.exception = exc
+            return True
+        return False
 
 
 # ---------------------------------------------------------------------------
@@ -199,7 +246,10 @@ def delete_quietly(path: Path) -> bool:
     Use ``contextlib.suppress(FileNotFoundError)``. Other errors, such as
     trying to delete a directory, still propagate.
     """
-    raise NotImplementedError("TODO: implement this task")
+    with suppress(FileNotFoundError):
+        path.unlink()
+        return True
+    return False
 
 
 def parse_ints(values: Iterable[str]) -> list[int]:
@@ -208,7 +258,11 @@ def parse_ints(values: Iterable[str]) -> list[int]:
     >>> parse_ints(["1", "x", " 2 ", "3.5"])
     [1, 2]
     """
-    raise NotImplementedError("TODO: implement this task")
+    result: list[int] = []
+    for value in values:
+        with suppress(ValueError):
+            result.append(int(value))
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -233,7 +287,8 @@ def acquire_all[T](factories: Iterable[Callable[[], AbstractContextManager[T]]])
     Hint: ``with ExitStack() as stack: stack.enter_context(cm)`` handles every
     case above.
     """
-    raise NotImplementedError("TODO: implement this task")
+    with ExitStack() as stack:
+        yield [stack.enter_context(factory()) for factory in factories]
 
 
 # ---------------------------------------------------------------------------
@@ -254,7 +309,13 @@ def transaction(store: dict[str, Any]) -> Iterator[dict[str, Any]]:
     This is what ``async with session.begin():`` does for a SQLAlchemy
     session.
     """
-    raise NotImplementedError("TODO: implement this task")
+    snapshot = copy.deepcopy(store)
+    try:
+        yield store
+    except BaseException:
+        store.clear()
+        store.update(snapshot)
+        raise
 
 
 # ---------------------------------------------------------------------------
@@ -274,7 +335,17 @@ def run_all[T](jobs: Mapping[str, Callable[[], T]]) -> dict[str, T]:
     ``ExceptionGroup`` (3.11+) carries all of them, the same way
     ``asyncio.TaskGroup`` does.
     """
-    raise NotImplementedError("TODO: implement this task")
+    results: dict[str, T] = {}
+    failures: list[Exception] = []
+    for name, job in jobs.items():
+        try:
+            results[name] = job()
+        except Exception as exc:
+            exc.add_note(f"job: {name}")
+            failures.append(exc)
+    if failures:
+        raise ExceptionGroup(f"{len(failures)} of {len(jobs)} job(s) failed", failures)
+    return results
 
 
 def count_failures(func: Callable[[], object]) -> dict[str, int]:
@@ -289,4 +360,11 @@ def count_failures(func: Callable[[], object]) -> dict[str, int]:
     * Any other exception type in the group is not handled. ``except*``
       re-raises it automatically in an ``ExceptionGroup``.
     """
-    raise NotImplementedError("TODO: implement this task")
+    counts: dict[str, int] = {}
+    try:
+        func()
+    except* ValueError as eg:
+        counts["ValueError"] = len(eg.exceptions)
+    except* KeyError as eg:
+        counts["KeyError"] = len(eg.exceptions)
+    return counts

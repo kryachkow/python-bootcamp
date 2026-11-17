@@ -48,20 +48,32 @@ class OrderStatus(StrEnum):
     constant, or build it inside the method.
     """
 
-    pass
+    PENDING = auto()
+    PAID = auto()
+    SHIPPED = auto()
+    DELIVERED = auto()
+    CANCELLED = auto()
 
     @property
     def is_final(self) -> bool:
-        raise NotImplementedError("TODO: implement this task")
+        return not _TRANSITIONS[self]
 
     def can_transition_to(self, target: OrderStatus) -> bool:
-        raise NotImplementedError("TODO: implement this task")
+        return target in _TRANSITIONS[self]
 
     def transition_to(self, target: OrderStatus) -> OrderStatus:
-        raise NotImplementedError("TODO: implement this task")
+        if not self.can_transition_to(target):
+            raise ValueError(f"cannot go from {self} to {target}")
+        return target
 
 
-# (your transition table goes here, if you want one)
+_TRANSITIONS: dict[OrderStatus, frozenset[OrderStatus]] = {
+    OrderStatus.PENDING: frozenset({OrderStatus.PAID, OrderStatus.CANCELLED}),
+    OrderStatus.PAID: frozenset({OrderStatus.SHIPPED, OrderStatus.CANCELLED}),
+    OrderStatus.SHIPPED: frozenset({OrderStatus.DELIVERED}),
+    OrderStatus.DELIVERED: frozenset(),
+    OrderStatus.CANCELLED: frozenset(),
+}
 
 
 # ---------------------------------------------------------------------------
@@ -90,17 +102,26 @@ class Permission(IntFlag):
     single-bit members it contains.
     """
 
-    pass
+    READ = auto()
+    WRITE = auto()
+    DELETE = auto()
+    ADMIN = READ | WRITE | DELETE
 
     @classmethod
     def from_names(cls, names: Iterable[str]) -> Permission:
-        raise NotImplementedError("TODO: implement this task")
+        result = cls(0)
+        for name in names:
+            key = name.strip().upper()
+            if key not in cls.__members__:
+                raise ValueError(f"unknown permission: {name!r}")
+            result |= cls[key]
+        return result
 
     def allows(self, required: Permission) -> bool:
-        raise NotImplementedError("TODO: implement this task")
+        return self & required == required
 
     def names(self) -> list[str]:
-        raise NotImplementedError("TODO: implement this task")
+        return [m.name.lower() for m in self if m.name]
 
 
 # ---------------------------------------------------------------------------
@@ -131,17 +152,31 @@ class GeoPoint(NamedTuple):
         d = 2 · R · asin(√h)          (φ = latitude, λ = longitude, in radians)
     """
 
-    pass
+    lat: float
+    lon: float
+    label: str = ""
 
     def distance_km(self, other: GeoPoint) -> float:
-        raise NotImplementedError("TODO: implement this task")
+        phi1, phi2 = math.radians(self.lat), math.radians(other.lat)
+        d_phi = phi2 - phi1
+        d_lambda = math.radians(other.lon - self.lon)
+        h = math.sin(d_phi / 2) ** 2 + math.cos(phi1) * math.cos(phi2) * math.sin(d_lambda / 2) ** 2
+        return 2 * EARTH_RADIUS_KM * math.asin(math.sqrt(h))
 
     def with_label(self, label: str) -> GeoPoint:
-        raise NotImplementedError("TODO: implement this task")
+        return self._replace(label=label)
 
     @classmethod
     def from_string(cls, text: str) -> GeoPoint:
-        raise NotImplementedError("TODO: implement this task")
+        parts = [p.strip() for p in text.split(",")]
+        if len(parts) not in (2, 3):
+            raise ValueError(f"expected 'lat,lon[,label]', got {text!r}")
+        lat, lon = float(parts[0]), float(parts[1])  # float() raises ValueError itself
+        if not -90 <= lat <= 90:
+            raise ValueError(f"latitude out of range: {lat}")
+        if not -180 <= lon <= 180:
+            raise ValueError(f"longitude out of range: {lon}")
+        return cls(lat, lon, parts[2] if len(parts) == 3 else "")
 
 
 # ---------------------------------------------------------------------------
@@ -149,7 +184,7 @@ class GeoPoint(NamedTuple):
 # ---------------------------------------------------------------------------
 # Replace the plain ``@dataclass`` below so that ``Version`` is frozen
 # (immutable and hashable) and ordered (``<`` compares fields in order).
-@dataclass
+@dataclass(frozen=True, order=True)
 class Version:
     """A semantic version ``major.minor.patch``.
 
@@ -173,17 +208,33 @@ class Version:
     patch: int = 0
 
     def __post_init__(self) -> None:
-        raise NotImplementedError("TODO: implement this task")
+        for f in fields(self):
+            value = getattr(self, f.name)
+            if isinstance(value, bool) or not isinstance(value, int):
+                raise TypeError(f"{f.name} must be an int")
+            if value < 0:
+                raise ValueError(f"{f.name} must be >= 0")
 
     @classmethod
     def parse(cls, text: str) -> Self:
-        raise NotImplementedError("TODO: implement this task")
+        parts = text.removeprefix("v").split(".")
+        if len(parts) != 3 or not all(p.isdigit() for p in parts):
+            raise ValueError(f"invalid version: {text!r}")
+        major, minor, patch = (int(p) for p in parts)
+        return cls(major, minor, patch)
 
     def bump(self, part: Literal["major", "minor", "patch"]) -> Self:
-        raise NotImplementedError("TODO: implement this task")
+        match part:
+            case "major":
+                return replace(self, major=self.major + 1, minor=0, patch=0)
+            case "minor":
+                return replace(self, minor=self.minor + 1, patch=0)
+            case "patch":
+                return replace(self, patch=self.patch + 1)
+        raise ValueError(f"unknown part: {part!r}")
 
     def __str__(self) -> str:
-        raise NotImplementedError("TODO: implement this task")
+        return f"{self.major}.{self.minor}.{self.patch}"
 
 
 # ---------------------------------------------------------------------------
@@ -214,18 +265,29 @@ class LineItem:
     quantity: int = 1
 
     def __post_init__(self) -> None:
-        raise NotImplementedError("TODO: implement this task")
+        self.sku = self.sku.strip().upper()
+        if not self.sku:
+            raise ValueError("sku must not be empty")
+        if isinstance(self.unit_price, float):
+            raise TypeError("unit_price must not be a float")
+        self.unit_price = Decimal(self.unit_price)
+        if self.unit_price < 0:
+            raise ValueError("unit_price must be >= 0")
+        if isinstance(self.quantity, bool) or not isinstance(self.quantity, int):
+            raise TypeError("quantity must be an int")
+        if self.quantity < 1:
+            raise ValueError("quantity must be >= 1")
 
     @property
     def subtotal(self) -> Decimal:
-        raise NotImplementedError("TODO: implement this task")
+        return self.unit_price * self.quantity
 
 
 # ---------------------------------------------------------------------------
 # Task 6: kw_only, default_factory, field options
 # ---------------------------------------------------------------------------
 # Replace the plain ``@dataclass`` below with a keyword-only one.
-@dataclass
+@dataclass(kw_only=True)
 class Order:
     """An order. Write the fields yourself:
 
@@ -251,14 +313,24 @@ class Order:
       empty.
     """
 
-    pass
+    id: str
+    customer_email: str
+    items: list[LineItem] = field(default_factory=list)
+    tags: set[str] = field(default_factory=set)
+    created_at: datetime = field(default_factory=lambda: datetime.now(UTC), compare=False)
 
     def add_item(self, item: LineItem) -> None:
-        raise NotImplementedError("TODO: implement this task")
+        for i, existing in enumerate(self.items):
+            if existing.sku == item.sku:
+                if existing.unit_price != item.unit_price:
+                    raise ValueError(f"price mismatch for {item.sku}")
+                self.items[i] = replace(existing, quantity=existing.quantity + item.quantity)
+                return
+        self.items.append(item)
 
     @property
     def total(self) -> Decimal:
-        raise NotImplementedError("TODO: implement this task")
+        return sum((item.subtotal for item in self.items), Decimal("0"))
 
 
 # ---------------------------------------------------------------------------
@@ -301,11 +373,31 @@ class AppConfig:
     timeout_s: float = 5.0
 
     def __post_init__(self) -> None:
-        raise NotImplementedError("TODO: implement this task")
+        if not 1 <= self.port <= 65535:
+            raise ValueError(f"port out of range: {self.port}")
+        if self.timeout_s <= 0:
+            raise ValueError("timeout_s must be > 0")
 
     @classmethod
     def from_env(cls, env: Mapping[str, str], *, prefix: str = "APP_") -> Self:
-        raise NotImplementedError("TODO: implement this task")
+        hints = get_type_hints(cls)
+        kwargs: dict[str, Any] = {}
+        for f in fields(cls):
+            key = prefix + f.name.upper()
+            if key not in env:
+                continue
+            raw, typ = env[key], hints[f.name]
+            if typ is bool:
+                lowered = raw.strip().lower()
+                if lowered in TRUE_STRINGS:
+                    kwargs[f.name] = True
+                elif lowered in FALSE_STRINGS:
+                    kwargs[f.name] = False
+                else:
+                    raise ValueError(f"{key}: not a boolean: {raw!r}")
+            else:
+                kwargs[f.name] = typ(raw)
+        return cls(**kwargs)
 
     def with_overrides(self, **changes: Any) -> Self:
-        raise NotImplementedError("TODO: implement this task")
+        return replace(self, **changes)

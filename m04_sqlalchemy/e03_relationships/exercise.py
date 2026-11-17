@@ -65,13 +65,23 @@ class Product(Base):
 # ``cascade="all, delete-orphan"``: deleting an author deletes their books, and
 # a book removed from ``author.books`` is deleted (it cannot exist without one).
 
-pass
-class Author:  # TODO: replace with the mapped Author model
-    pass
+class Author(Base):
+    __tablename__ = "authors"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    name: Mapped[str] = mapped_column(String(100), unique=True)
+    books: Mapped[list[Book]] = relationship(
+        back_populates="author", cascade="all, delete-orphan", order_by="Book.title"
+    )
 
 
-class Book:  # TODO: replace with the mapped Book model
-    pass
+class Book(Base):
+    __tablename__ = "books"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    title: Mapped[str] = mapped_column(String(200))
+    author_id: Mapped[int] = mapped_column(ForeignKey("authors.id"))
+    author: Mapped[Author] = relationship(back_populates="books")
 
 
 # ---------------------------------------------------------------------------
@@ -90,16 +100,28 @@ class Book:  # TODO: replace with the mapped Book model
 # Do not map ``post_tags`` as a class: with ``secondary=`` the ORM inserts and
 # deletes its rows for you when you change ``post.tags``.
 
-pass
-post_tags: Table = None  # type: ignore[assignment]  # TODO: define the Table
+post_tags = Table(
+    "post_tags",
+    Base.metadata,
+    Column("post_id", ForeignKey("posts.id", ondelete="CASCADE"), primary_key=True),
+    Column("tag_id", ForeignKey("tags.id", ondelete="CASCADE"), primary_key=True),
+)
 
 
-class Post:  # TODO: replace with the mapped Post model
-    pass
+class Post(Base):
+    __tablename__ = "posts"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    title: Mapped[str] = mapped_column(String(200))
+    tags: Mapped[list[Tag]] = relationship(secondary=post_tags, back_populates="posts")
 
 
-class Tag:  # TODO: replace with the mapped Tag model
-    pass
+class Tag(Base):
+    __tablename__ = "tags"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    name: Mapped[str] = mapped_column(String(50), unique=True)
+    posts: Mapped[list[Post]] = relationship(secondary=post_tags, back_populates="tags")
 
 
 # ---------------------------------------------------------------------------
@@ -120,13 +142,29 @@ class Tag:  # TODO: replace with the mapped Tag model
 #   * order: Mapped["Order"] = relationship(back_populates="lines")
 #   * product: Mapped["Product"] = relationship()      (one-directional)
 
-pass
-class Order:  # TODO: replace with the mapped Order model
-    pass
+class Order(Base):
+    __tablename__ = "orders"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    customer: Mapped[str] = mapped_column(String(100))
+    lines: Mapped[list[OrderLine]] = relationship(
+        back_populates="order", cascade="all, delete-orphan"
+    )
+
+    @property
+    def total(self) -> Decimal:
+        return sum((line.quantity * line.unit_price for line in self.lines), Decimal("0"))
 
 
-class OrderLine:  # TODO: replace with the mapped OrderLine model
-    pass
+class OrderLine(Base):
+    __tablename__ = "order_lines"
+
+    order_id: Mapped[int] = mapped_column(ForeignKey("orders.id"), primary_key=True)
+    product_id: Mapped[int] = mapped_column(ForeignKey("products.id"), primary_key=True)
+    quantity: Mapped[int]
+    unit_price: Mapped[Decimal] = mapped_column(Numeric(10, 2))
+    order: Mapped[Order] = relationship(back_populates="lines")
+    product: Mapped[Product] = relationship()
 
 
 # ---------------------------------------------------------------------------
@@ -144,7 +182,15 @@ def tag_post(session: Session, post: Post, names: Sequence[str]) -> list[Tag]:
     >>> [t.name for t in tag_post(session, post, ["python", "sql", "python"])]  # doctest: +SKIP
     ['python', 'sql']
     """
-    raise NotImplementedError("TODO: implement this task")
+    for name in names:
+        if any(t.name == name for t in post.tags):
+            continue
+        tag = session.scalars(select(Tag).where(Tag.name == name)).one_or_none()
+        if tag is None:
+            tag = Tag(name=name)
+        post.tags.append(tag)
+    session.flush()
+    return post.tags
 
 
 # ---------------------------------------------------------------------------
@@ -161,7 +207,18 @@ def place_order(session: Session, customer: str, items: Mapping[int, int]) -> Or
     * Add the order (lines follow through the cascade) and ``flush()``;
       do not commit.
     """
-    raise NotImplementedError("TODO: implement this task")
+    lines: list[OrderLine] = []
+    for product_id, quantity in items.items():
+        if quantity < 1:
+            raise ValueError(f"quantity must be >= 1, got {quantity}")
+        product = session.get(Product, product_id)
+        if product is None:
+            raise LookupError(f"Product {product_id} not found")
+        lines.append(OrderLine(product=product, quantity=quantity, unit_price=product.price))
+    order = Order(customer=customer, lines=lines)
+    session.add(order)
+    session.flush()
+    return order
 
 
 # ---------------------------------------------------------------------------
@@ -177,7 +234,8 @@ def authors_with_books(session: Session) -> list[Author]:
     Hint: ``select(Author).options(selectinload(Author.books))``.
     ``selectinload`` is the usual best choice for one-to-many collections.
     """
-    raise NotImplementedError("TODO: implement this task")
+    stmt = select(Author).options(selectinload(Author.books)).order_by(Author.name)
+    return list(session.scalars(stmt))
 
 
 # ---------------------------------------------------------------------------
@@ -191,7 +249,8 @@ def books_with_authors(session: Session) -> list[Book]:
     Hint: ``joinedload(Book.author)``. ``joinedload`` suits many-to-one; for a
     collection it multiplies rows (then you would need ``.unique()``).
     """
-    raise NotImplementedError("TODO: implement this task")
+    stmt = select(Book).options(joinedload(Book.author)).order_by(Book.title)
+    return list(session.scalars(stmt))
 
 
 # ---------------------------------------------------------------------------
@@ -204,4 +263,9 @@ def orders_with_details(session: Session) -> list[Order]:
     Hint: chain the options along the path:
     ``selectinload(Order.lines).joinedload(OrderLine.product)``.
     """
-    raise NotImplementedError("TODO: implement this task")
+    stmt = (
+        select(Order)
+        .options(selectinload(Order.lines).joinedload(OrderLine.product))
+        .order_by(Order.id)
+    )
+    return list(session.scalars(stmt))

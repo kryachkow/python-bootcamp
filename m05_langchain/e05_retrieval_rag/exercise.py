@@ -81,7 +81,19 @@ def load_documents(records: Iterable[dict[str, Any]]) -> list[Document]:
 
     Skip records whose body is empty or only whitespace.
     """
-    raise NotImplementedError("TODO: implement this task")
+    docs = []
+    for r in records:
+        body = (r.get("body") or "").strip()
+        if not body:
+            continue
+        docs.append(
+            Document(
+                page_content=body,
+                metadata={"source": r["url"], "title": r["title"], "doc_id": r["id"]},
+                id=str(r["id"]),
+            )
+        )
+    return docs
 
 
 # ---------------------------------------------------------------------------
@@ -109,7 +121,18 @@ def split_documents(
     Hint: call ``splitter.split_documents([doc])`` once per document so you
     can number the chunks of each one.
     """
-    raise NotImplementedError("TODO: implement this task")
+    if chunk_overlap >= chunk_size:
+        raise ValueError("chunk_overlap must be smaller than chunk_size")
+    splitter = RecursiveCharacterTextSplitter(
+        chunk_size=chunk_size, chunk_overlap=chunk_overlap, add_start_index=True
+    )
+    chunks: list[Document] = []
+    for doc in docs:
+        for i, chunk in enumerate(splitter.split_documents([doc])):
+            chunk.metadata["chunk_index"] = i
+            chunk.id = f"{doc.id}:{i}" if doc.id is not None else None
+            chunks.append(chunk)
+    return chunks
 
 
 # ---------------------------------------------------------------------------
@@ -124,7 +147,11 @@ def cosine_similarity(a: Sequence[float], b: Sequence[float]) -> float:
     ``dot(a, b) / (|a| * |b|)``; return ``0.0`` if either vector is all zeros.
     Different lengths raise ``ValueError``.
     """
-    raise NotImplementedError("TODO: implement this task")
+    if len(a) != len(b):
+        raise ValueError("vectors must have the same length")
+    dot = sum(x * y for x, y in zip(a, b))
+    norm = math.sqrt(sum(x * x for x in a)) * math.sqrt(sum(y * y for y in b))
+    return dot / norm if norm else 0.0
 
 
 class SimpleVectorStore(VectorStore):
@@ -159,7 +186,16 @@ class SimpleVectorStore(VectorStore):
           Adding an id that already exists replaces it (upsert).
         * ``ids`` of the wrong length raises ``ValueError``.
         """
-        raise NotImplementedError("TODO: implement this task")
+        ids = kwargs.get("ids")
+        if ids is not None and len(ids) != len(documents):
+            raise ValueError("ids must have the same length as documents")
+        vectors = self.embedding.embed_documents([d.page_content for d in documents])
+        result = []
+        for i, (doc, vector) in enumerate(zip(documents, vectors)):
+            doc_id = ids[i] if ids is not None else (doc.id or uuid.uuid4().hex)
+            self._records[doc_id] = (doc.model_copy(update={"id": doc_id}), vector)
+            result.append(doc_id)
+        return result
 
     def similarity_search_with_score(
         self, query: str, k: int = 4, filter: MetadataFilter | None = None, **kwargs: Any
@@ -174,7 +210,22 @@ class SimpleVectorStore(VectorStore):
         * Sort by score, highest first; equal scores keep insertion order.
         * Return at most ``k`` pairs; ``k <= 0`` or an empty store gives ``[]``.
         """
-        raise NotImplementedError("TODO: implement this task")
+        if k <= 0:
+            return []
+        query_vector = self.embedding.embed_query(query)
+        if filter is None:
+            keep: Callable[[Document], bool] = lambda d: True
+        elif callable(filter):
+            keep = filter
+        else:
+            keep = lambda d: all(d.metadata.get(key) == value for key, value in filter.items())
+        scored = [
+            (doc, cosine_similarity(query_vector, vector))
+            for doc, vector in self._records.values()
+            if keep(doc)
+        ]
+        scored.sort(key=lambda pair: pair[1], reverse=True)
+        return scored[:k]
 
     def similarity_search(
         self, query: str, k: int = 4, filter: MetadataFilter | None = None, **kwargs: Any
@@ -183,7 +234,7 @@ class SimpleVectorStore(VectorStore):
 
         ``as_retriever()`` calls this method with its ``search_kwargs``.
         """
-        raise NotImplementedError("TODO: implement this task")
+        return [doc for doc, _ in self.similarity_search_with_score(query, k=k, filter=filter)]
 
     @classmethod
     def from_texts(
@@ -209,7 +260,10 @@ def build_retriever(store: VectorStore, k: int = 4, source: str | None = None) -
       only chunks of that document are returned (e.g. "search in this
       PDF only").
     """
-    raise NotImplementedError("TODO: implement this task")
+    search_kwargs: dict[str, Any] = {"k": k}
+    if source is not None:
+        search_kwargs["filter"] = {"source": source}
+    return store.as_retriever(search_kwargs=search_kwargs)
 
 
 # ---------------------------------------------------------------------------
@@ -230,7 +284,12 @@ def format_docs(docs: Sequence[Document]) -> str:
     [1] faq.md
     Refunds take 5 days.
     """
-    raise NotImplementedError("TODO: implement this task")
+    if not docs:
+        return NO_CONTEXT
+    return "\n\n".join(
+        f"[{i}] {d.metadata.get('source', 'unknown')}\n{d.page_content}"
+        for i, d in enumerate(docs, start=1)
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -260,7 +319,12 @@ def build_rag_chain(retriever: Retriever, model: ChatModel) -> Runnable[str, str
     The dict runs both branches on the same input string: one retrieves and
     formats, the other passes the question through unchanged.
     """
-    raise NotImplementedError("TODO: implement this task")
+    return (
+        {"context": retriever | RunnableLambda(format_docs), "question": RunnablePassthrough()}
+        | RAG_PROMPT
+        | model
+        | StrOutputParser()
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -280,4 +344,19 @@ def build_rag_chain_with_sources(retriever: Retriever, model: ChatModel) -> Runn
       then map to the output dict.
     * Documents without a ``source`` are left out of ``sources``.
     """
-    raise NotImplementedError("TODO: implement this task")
+    answer = (
+        RunnableLambda(lambda x: {"context": format_docs(x["docs"]), "question": x["question"]})
+        | RAG_PROMPT
+        | model
+        | StrOutputParser()
+    )
+
+    def to_output(x: dict) -> dict:
+        sources = [d.metadata["source"] for d in x["docs"] if "source" in d.metadata]
+        return {"answer": x["answer"], "sources": list(dict.fromkeys(sources))}
+
+    return (
+        RunnableParallel(docs=retriever, question=RunnablePassthrough())
+        .assign(answer=answer)
+        | RunnableLambda(to_output)
+    )

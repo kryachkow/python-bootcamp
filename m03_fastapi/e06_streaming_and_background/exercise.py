@@ -89,7 +89,14 @@ router = APIRouter()
 # The client side looks like this:
 # ``with client.stream("GET", "/count", params={"n": 3}) as r: r.iter_lines()``.
 #
-# TODO: implement this task (see the spec above)
+@router.get("/count")
+async def count(n: Annotated[int, Query(ge=1, le=100)]) -> StreamingResponse:
+    async def numbers() -> AsyncIterator[str]:
+        for i in range(1, n + 1):
+            yield f"{i}\n"
+            await asyncio.sleep(0)
+
+    return StreamingResponse(numbers(), media_type="text/plain")
 
 
 # ---------------------------------------------------------------------------
@@ -113,7 +120,13 @@ def format_sse(data: str, event: str | None = None, id: str | None = None) -> st
     >>> format_sse("a\\nb", event="done", id="7")
     'id: 7\\nevent: done\\ndata: a\\ndata: b\\n\\n'
     """
-    raise NotImplementedError("TODO: implement this task")
+    lines = []
+    if id is not None:
+        lines.append(f"id: {id}")
+    if event is not None:
+        lines.append(f"event: {event}")
+    lines.extend(f"data: {line}" for line in data.split("\n"))
+    return "\n".join(lines) + "\n\n"
 
 
 # ---------------------------------------------------------------------------
@@ -128,7 +141,18 @@ def format_sse(data: str, event: str | None = None, id: str | None = None) -> st
 #   ``Cache-Control: no-cache`` and ``X-Accel-Buffering: no``. The second one
 #   stops nginx from buffering the stream into one late blob.
 #
-# TODO: implement this task (see the spec above)
+@router.post("/chat/stream")
+async def chat_stream(body: ChatIn) -> StreamingResponse:
+    async def events() -> AsyncIterator[str]:
+        async for token in fake_llm_stream(body.prompt):
+            yield format_sse(json.dumps({"token": token}))
+        yield format_sse("[DONE]", event="done")
+
+    return StreamingResponse(
+        events(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -149,7 +173,13 @@ def format_sse(data: str, event: str | None = None, id: str | None = None) -> st
 # FastAPI sets ``text/event-stream`` and the no-cache headers itself.
 # Annotate the return type as ``AsyncIterable[ServerSentEvent]``.
 #
-# TODO: implement this task (see the spec above)
+@router.get("/chat/events", response_class=EventSourceResponse)
+async def chat_events(prompt: str) -> AsyncIterable[ServerSentEvent]:
+    i = 0
+    async for token in fake_llm_stream(prompt):
+        yield ServerSentEvent(data={"token": token}, event="token", id=str(i))
+        i += 1
+    yield ServerSentEvent(raw_data="[DONE]", event="done")
 
 
 # ---------------------------------------------------------------------------
@@ -160,13 +190,14 @@ def index_document(doc_id: str, text: str) -> None:
 
     Words are whitespace-separated, so ``"a b  c"`` has 3.
     """
-    raise NotImplementedError("TODO: implement this task")
+    INDEX_LOG.append(f"indexed:{doc_id}:{len(text.split())}")
 
 
 async def notify_indexed(doc_id: str) -> None:
     """Background job (async): ``await asyncio.sleep(0)``, then append
     ``f"notified:{doc_id}"`` to ``INDEX_LOG``."""
-    raise NotImplementedError("TODO: implement this task")
+    await asyncio.sleep(0)
+    INDEX_LOG.append(f"notified:{doc_id}")
 
 
 # ``POST /documents`` takes a ``DocumentIn`` body and a ``BackgroundTasks``
@@ -182,7 +213,11 @@ async def notify_indexed(doc_id: str) -> None:
 # process, so use a real queue (Celery, arq, SQS) for work that must survive
 # a crash.
 #
-# TODO: implement this task (see the spec above)
+@router.post("/documents", status_code=status.HTTP_202_ACCEPTED)
+async def submit_document(doc: DocumentIn, background_tasks: BackgroundTasks) -> dict[str, str]:
+    background_tasks.add_task(index_document, doc.id, doc.text)
+    background_tasks.add_task(notify_indexed, doc.id)
+    return {"id": doc.id, "status": "queued"}
 
 
 # ---------------------------------------------------------------------------
@@ -196,7 +231,13 @@ async def notify_indexed(doc_id: str) -> None:
 # * Take ``ids: Annotated[list[int], Query(alias="id", min_length=1)]``.
 # * Return ``{"items": [<found metadata, in request order>], "missing": [<ids that returned None>]}``.
 #
-# TODO: implement this task (see the spec above)
+@router.get("/enrich")
+async def enrich(ids: Annotated[list[int], Query(alias="id", min_length=1)]) -> dict[str, list[Any]]:
+    results = await asyncio.gather(*(fetch_metadata(doc_id) for doc_id in ids))
+    return {
+        "items": [r for r in results if r is not None],
+        "missing": [doc_id for doc_id, r in zip(ids, results, strict=True) if r is None],
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -219,7 +260,27 @@ async def notify_indexed(doc_id: str) -> None:
 #
 # Return ``{"filename": ..., "size_bytes": ..., "lines": ...}``.
 #
-# TODO: implement this task (see the spec above)
+@router.post("/files/stats")
+async def file_stats(request: Request) -> dict[str, Any]:
+    if not request.headers.get("content-type", "").startswith("text/"):
+        raise HTTPException(status.HTTP_415_UNSUPPORTED_MEDIA_TYPE, detail="Only text/* uploads are supported")
+    size = newlines = 0
+    last_byte = b""
+    async for chunk in request.stream():
+        if not chunk:
+            continue
+        size += len(chunk)
+        if size > MAX_UPLOAD_BYTES:
+            raise HTTPException(status.HTTP_413_CONTENT_TOO_LARGE, detail=f"Upload exceeds {MAX_UPLOAD_BYTES} bytes")
+        newlines += chunk.count(b"\n")
+        last_byte = chunk[-1:]
+    if size == 0:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, detail="Empty upload")
+    return {
+        "filename": request.headers.get("x-filename", "upload.txt"),
+        "size_bytes": size,
+        "lines": newlines + (last_byte != b"\n"),
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -240,7 +301,29 @@ async def notify_indexed(doc_id: str) -> None:
 # * If the client disconnects, ``receive_json`` raises ``WebSocketDisconnect``.
 #   Catch it and return quietly.
 #
-# TODO: implement this task (see the spec above)
+@router.websocket("/ws/chat")
+async def ws_chat(websocket: WebSocket, token: str | None = None) -> None:
+    if token != WS_TOKEN:
+        await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
+        return
+    await websocket.accept()
+    count = 0
+    try:
+        while True:
+            msg = await websocket.receive_json()
+            kind = msg.get("type")
+            if kind == "message":
+                count += 1
+                await websocket.send_json({"type": "echo", "text": msg.get("text"), "n": count})
+            elif kind == "ping":
+                await websocket.send_json({"type": "pong"})
+            elif kind == "bye":
+                await websocket.close(code=status.WS_1000_NORMAL_CLOSURE)
+                return
+            else:
+                await websocket.send_json({"type": "error", "detail": "unknown message type"})
+    except WebSocketDisconnect:
+        return
 
 
 def create_app() -> FastAPI:

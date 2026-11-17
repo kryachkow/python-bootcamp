@@ -138,7 +138,15 @@ async def complete(body: CompletionIn, request: Request) -> dict[str, str]:
 #   ``detail="Not authenticated"``, and ``headers={"WWW-Authenticate": "Bearer"}``.
 #   RFC 9110 requires that header on every 401.
 #
-# TODO: implement this task (see the spec above)
+@router.get("/protected")
+def protected(authorization: Annotated[str | None, Header()] = None) -> dict[str, bool]:
+    if authorization != "Bearer secret-token":
+        raise HTTPException(
+            status.HTTP_401_UNAUTHORIZED,
+            detail="Not authenticated",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    return {"ok": True}
 
 
 # ---------------------------------------------------------------------------
@@ -155,7 +163,11 @@ async def domain_error_handler(request: Request, exc: DomainError) -> JSONRespon
     Register it in ``create_app`` with ``app.add_exception_handler(DomainError, ...)``.
     A handler registered for a base class also catches its subclasses.
     """
-    raise NotImplementedError("TODO: implement this task")
+    return JSONResponse(
+        status_code=exc.status_code,
+        content={"error": {"code": exc.code, "message": exc.message}},
+        headers=exc.headers,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -177,7 +189,20 @@ async def validation_error_handler(request: Request, exc: RequestValidationError
     ``str()`` on each part: ``("body", "items", 0)`` becomes ``"body.items.0"``.
     ``message`` is the error's ``msg``.
     """
-    raise NotImplementedError("TODO: implement this task")
+    details = [
+        {"field": ".".join(str(part) for part in err["loc"]), "message": err["msg"]}
+        for err in exc.errors()
+    ]
+    return JSONResponse(
+        status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+        content={
+            "error": {
+                "code": "validation_error",
+                "message": "Request validation failed",
+                "details": details,
+            }
+        },
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -195,7 +220,10 @@ async def unhandled_error_handler(request: Request, exc: Exception) -> JSONRespo
     ``ServerErrorMiddleware``. It sends your response, then re-raises the
     exception so servers and test clients still see it.
     """
-    raise NotImplementedError("TODO: implement this task")
+    return JSONResponse(
+        status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+        content={"error": {"code": "internal_error", "message": "Internal server error"}},
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -220,7 +248,15 @@ async def request_context_middleware(
     Error responses from Tasks 2-3 pass through it too, so they get the
     headers as well.
     """
-    raise NotImplementedError("TODO: implement this task")
+    incoming = request.headers.get("x-request-id")
+    request_id = incoming if incoming and REQUEST_ID_PATTERN.fullmatch(incoming) else uuid.uuid4().hex
+    request.state.request_id = request_id
+    start = time.perf_counter()
+    response = await call_next(request)
+    elapsed_ms = (time.perf_counter() - start) * 1000
+    response.headers["X-Request-ID"] = request_id
+    response.headers["X-Process-Time"] = f"{elapsed_ms:.2f}"
+    return response
 
 
 # ---------------------------------------------------------------------------
@@ -241,10 +277,19 @@ async def request_context_middleware(
 # The lifespan runs only when the ``TestClient`` is used as a context
 # manager (``with TestClient(app) as client:``), like a real server process.
 #
-# TODO: replace the placeholder lifespan below (it only yields)
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
-    yield
+    LIFECYCLE_EVENTS.append("startup")
+    app.state.llm = FakeLLMClient(model="fake-1")
+    app.state.prompts = {
+        "summarize": "Summarize: {text}",
+        "translate": "Translate to French: {text}",
+    }
+    try:
+        yield
+    finally:
+        await app.state.llm.aclose()
+        LIFECYCLE_EVENTS.append("shutdown")
 
 
 # ---------------------------------------------------------------------------
@@ -264,7 +309,15 @@ def configure_cors(app: FastAPI, origins: list[str]) -> None:
     ``create_app`` calls this last, which makes CORS the outermost
     middleware, so its headers are present even on error responses.
     """
-    # TODO: add CORSMiddleware (until then this function does nothing)
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=origins,
+        allow_credentials=True,
+        allow_methods=["GET", "POST"],
+        allow_headers=["Authorization", "Content-Type", "X-Request-ID"],
+        expose_headers=["X-Request-ID", "X-Process-Time"],
+        max_age=600,
+    )
 
 
 def create_app(cors_origins: list[str] | None = None) -> FastAPI:
@@ -276,8 +329,10 @@ def create_app(cors_origins: list[str] | None = None) -> FastAPI:
     app = FastAPI(title="Errors, middleware, lifespan", lifespan=lifespan)
     app.include_router(router)
     # Tasks 2-4: register the exception handlers.
-    # TODO: implement this task
+    app.add_exception_handler(DomainError, domain_error_handler)
+    app.add_exception_handler(RequestValidationError, validation_error_handler)
+    app.add_exception_handler(Exception, unhandled_error_handler)
     # Task 5: register the HTTP middleware.
-    # TODO: implement this task
+    app.middleware("http")(request_context_middleware)
     configure_cors(app, cors_origins or ["https://app.example.com"])
     return app

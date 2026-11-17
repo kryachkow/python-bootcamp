@@ -47,13 +47,24 @@ class Paginator[T]:
 
     def __init__(self, fetch: Callable[[str | None], tuple[list[T], str | None]]) -> None:
         self._fetch = fetch
-        pass
+        self._buffer: deque[T] = deque()
+        self._cursor: str | None = None
+        self._last_page_seen = False
+        self.pages_fetched = 0
 
     def __iter__(self) -> Paginator[T]:
-        raise NotImplementedError("TODO: implement this task")
+        return self
 
     def __next__(self) -> T:
-        raise NotImplementedError("TODO: implement this task")
+        while not self._buffer:
+            if self._last_page_seen:
+                raise StopIteration
+            items, self._cursor = self._fetch(self._cursor)
+            self.pages_fetched += 1
+            self._buffer.extend(items)
+            if self._cursor is None:
+                self._last_page_seen = True
+        return self._buffer.popleft()
 
 
 # ---------------------------------------------------------------------------
@@ -73,7 +84,10 @@ def clean_lines(lines: Iterable[str]) -> Iterator[str]:
     >>> list(clean_lines(["a\\n", "   \\n", "  # comment\\n", "  b  \\n"]))
     ['a', 'b']
     """
-    raise NotImplementedError("TODO: implement this task")
+    for line in lines:
+        stripped = line.strip()
+        if stripped and not stripped.startswith("#"):
+            yield stripped
 
 
 # ---------------------------------------------------------------------------
@@ -101,7 +115,18 @@ def parse_log_lines(lines: Iterable[str]) -> Iterator[LogRecord]:
 
     Hint: ``line.split(maxsplit=2)``.
     """
-    raise NotImplementedError("TODO: implement this task")
+    for line in lines:
+        parts = line.strip().split(maxsplit=2)
+        if len(parts) != 3:
+            continue
+        raw_ts, level, message = parts
+        if level not in LEVELS:
+            continue
+        try:
+            ts = datetime.fromisoformat(raw_ts)
+        except ValueError:
+            continue
+        yield LogRecord(ts, level, message)
 
 
 def errors_since(lines: Iterable[str], since: datetime) -> Iterator[str]:
@@ -114,7 +139,9 @@ def errors_since(lines: Iterable[str], since: datetime) -> Iterator[str]:
 
     This builds on Task 2 (``clean_lines``).
     """
-    raise NotImplementedError("TODO: implement this task")
+    records = parse_log_lines(clean_lines(lines))
+    threshold = LEVELS["ERROR"]
+    return (r.message for r in records if LEVELS[r.level] >= threshold and r.timestamp >= since)
 
 
 # ---------------------------------------------------------------------------
@@ -136,7 +163,12 @@ def iter_leaves(tree: Mapping[str, Any], prefix: str = "") -> Iterator[tuple[str
     This is how ``pydantic-settings`` and config loaders map nested config
     to ``DB__HOST``-style environment variables.
     """
-    raise NotImplementedError("TODO: implement this task")
+    for key, value in tree.items():
+        path = f"{prefix}.{key}" if prefix else str(key)
+        if isinstance(value, Mapping):
+            yield from iter_leaves(value, path)
+        else:
+            yield path, value
 
 
 # ---------------------------------------------------------------------------
@@ -158,7 +190,9 @@ def chunked[T](iterable: Iterable[T], size: int) -> Iterator[list[T]]:
 
     Hint: ``itertools.batched`` (3.12+) yields tuples; ``map(list, ...)``.
     """
-    raise NotImplementedError("TODO: implement this task")
+    if size < 1:
+        raise ValueError("size must be >= 1")
+    return map(list, itertools.batched(iterable, size))
 
 
 # ---------------------------------------------------------------------------
@@ -177,7 +211,12 @@ def daily_totals(events: Iterable[tuple[datetime, float]]) -> list[tuple[date, f
     ...               (datetime(2024, 1, 3, 7), 1.5)])
     [(datetime.date(2024, 1, 1), 15.0), (datetime.date(2024, 1, 3), 1.5)]
     """
-    raise NotImplementedError("TODO: implement this task")
+    result: list[tuple[date, float]] = []
+    for day, group in itertools.groupby(events, key=lambda e: e[0].date()):
+        if result and day <= result[-1][0]:
+            raise ValueError("events must be sorted by timestamp")
+        result.append((day, sum(amount for _, amount in group)))
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -198,7 +237,10 @@ def backoff_delays(base: float = 0.1, factor: float = 2.0, max_delay: float = 10
     Hint: ``itertools.accumulate(itertools.repeat(factor), operator.mul,
     initial=base)`` is an infinite geometric sequence. ``map`` a cap over it.
     """
-    raise NotImplementedError("TODO: implement this task")
+    if base <= 0 or factor < 1 or max_delay < base:
+        raise ValueError("invalid backoff parameters")
+    raw = itertools.accumulate(itertools.repeat(factor), operator.mul, initial=base)
+    return (min(d, max_delay) for d in raw)
 
 
 # ---------------------------------------------------------------------------
@@ -216,7 +258,9 @@ def interleave(*iterables: Iterable[Any]) -> Iterator[Any]:
     ``itertools.chain.from_iterable``, then filter out a private
     ``sentinel = object()``.
     """
-    raise NotImplementedError("TODO: implement this task")
+    sentinel = object()
+    rows = itertools.zip_longest(*iterables, fillvalue=sentinel)
+    return (item for item in itertools.chain.from_iterable(rows) if item is not sentinel)
 
 
 # ---------------------------------------------------------------------------
@@ -238,4 +282,11 @@ def running_average() -> Generator[float | None, float | None, None]:
     Hint: ``received = yield current`` both produces a value and receives
     the next one.
     """
-    raise NotImplementedError("TODO: implement this task")
+    total, count = 0.0, 0
+    current: float | None = None
+    while True:
+        received = yield current
+        if received is not None:
+            total += received
+            count += 1
+            current = total / count

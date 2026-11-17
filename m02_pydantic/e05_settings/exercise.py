@@ -41,12 +41,19 @@ from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 # Keyword arguments win over env vars: ``DatabaseSettings(port=1)`` ignores
 # ``BCAMP05_DB_PORT``.
 
-# TODO: replace the placeholder below with the real definition(s).
 class DatabaseSettings(BaseSettings):
-    """TODO: model_config with env_prefix, the fields, and url()."""
+    model_config = SettingsConfigDict(env_prefix="BCAMP05_DB_")
+
+    host: str = "localhost"
+    port: int = Field(default=5432, ge=1, le=65535)
+    name: str = "app"
+    user: str = "app"
+    password: SecretStr = SecretStr("")
+    pool_size: int = Field(default=5, ge=1)
 
     def url(self, *, hide_password: bool = True) -> str:
-        raise NotImplementedError("TODO: implement this task")
+        password = "***" if hide_password else self.password.get_secret_value()
+        return f"postgresql+asyncpg://{self.user}:{password}@{self.host}:{self.port}/{self.name}"
 
 
 # ---------------------------------------------------------------------------
@@ -68,9 +75,14 @@ class DatabaseSettings(BaseSettings):
 #   ``model_dump_json()`` (all show ``"**********"``). Only
 #   ``settings.api_key.get_secret_value()`` returns the real key.
 
-# TODO: replace the placeholder below with the real definition(s).
 class LLMSettings(BaseSettings):
-    """TODO: model_config with env_prefix and the fields."""
+    model_config = SettingsConfigDict(env_prefix="BCAMP05_LLM_")
+
+    api_key: SecretStr
+    model: str = "gpt-4o-mini"
+    temperature: float = Field(default=0.0, ge=0, le=2)
+    request_timeout_s: float = Field(default=30.0, gt=0)
+    max_retries: int = Field(default=2, ge=0)
 
 
 # ---------------------------------------------------------------------------
@@ -105,9 +117,13 @@ class CacheConfig(BaseModel):
 # ``settings.cache.ttl_s``; the other nested fields keep their defaults. A
 # whole section can also be given as JSON: ``BCAMP05_APP_DB='{"host": "x"}'``.
 
-# TODO: replace the placeholder below with the real definition(s).
 class AppSettings(BaseSettings):
-    """TODO: model_config with env_prefix + env_nested_delimiter, and the fields."""
+    model_config = SettingsConfigDict(env_prefix="BCAMP05_APP_", env_nested_delimiter="__")
+
+    app_name: str = "bootcamp-api"
+    debug: bool = False
+    db: DbConfig = DbConfig()
+    cache: CacheConfig = CacheConfig()
 
 
 # ---------------------------------------------------------------------------
@@ -130,9 +146,21 @@ class AppSettings(BaseSettings):
 # A value that is not valid JSON in ``BCAMP05_CORS_ALLOWED_ORIGINS`` makes
 # ``CorsSettings()`` raise ``pydantic_settings.SettingsError`` (a ``ValueError``).
 
-# TODO: replace the placeholder below with the real definition(s).
 class CorsSettings(BaseSettings):
-    """TODO: model_config, allowed_origins, allowed_methods (+ validator), max_age_s."""
+    model_config = SettingsConfigDict(env_prefix="BCAMP05_CORS_")
+
+    allowed_origins: list[str] = []
+    allowed_methods: Annotated[list[str], NoDecode] = ["GET"]
+    max_age_s: int = 600
+
+    @field_validator("allowed_methods", mode="before")
+    @classmethod
+    def _split_methods(cls, value: Any) -> Any:
+        if isinstance(value, str):
+            value = value.split(",")
+        if isinstance(value, list):
+            return [str(m).strip().upper() for m in value if str(m).strip()]
+        return value
 
 
 # ---------------------------------------------------------------------------
@@ -154,9 +182,18 @@ class CorsSettings(BaseSettings):
 # ``.env`` file, field defaults. A different file can be chosen per call:
 # ``ServiceSettings(_env_file="deploy/prod.env")``.
 
-# TODO: replace the placeholder below with the real definition(s).
 class ServiceSettings(BaseSettings):
-    """TODO: model_config with env_file, and the fields."""
+    model_config = SettingsConfigDict(
+        env_prefix="BCAMP05_SVC_",
+        env_file=".env",
+        env_file_encoding="utf-8",
+        extra="ignore",
+    )
+
+    service_name: str = "worker"
+    queue_url: str = "memory://"
+    concurrency: int = Field(default=4, ge=1)
+    sentry_dsn: SecretStr | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -185,9 +222,29 @@ class ServiceSettings(BaseSettings):
 # ``HttpUrl`` accepts only ``http``/``https``: ``"ftp://..."`` and even
 # ``"localhost:8000"`` (parsed as scheme ``localhost``) fail with ``"url_scheme"``.
 
-# TODO: replace the placeholder below with the real definition(s).
 class ServerSettings(BaseSettings):
-    """TODO: model_config, the fields, and the two validators."""
+    model_config = SettingsConfigDict(env_prefix="BCAMP05_SRV_")
+
+    environment: Literal["dev", "staging", "prod"] = "dev"
+    host: str = "127.0.0.1"
+    port: int = Field(default=8000, ge=1, le=65535)
+    public_url: HttpUrl = HttpUrl("http://localhost:8000")
+    log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR"] = "INFO"
+    debug: bool = False
+
+    @field_validator("log_level", mode="before")
+    @classmethod
+    def _upper_log_level(cls, value: Any) -> Any:
+        return value.upper() if isinstance(value, str) else value
+
+    @model_validator(mode="after")
+    def _production_rules(self) -> Self:
+        if self.environment == "prod":
+            if self.debug:
+                raise ValueError("debug must be off in prod")
+            if self.public_url.scheme != "https":
+                raise ValueError("public_url must use https in prod")
+        return self
 
 
 # ---------------------------------------------------------------------------
@@ -202,7 +259,7 @@ class ServerSettings(BaseSettings):
 # >>> get_settings() is get_settings()
 # True
 
-# TODO: replace the placeholder below with the real definition(s).
+@lru_cache
 def get_settings() -> AppSettings:
-    """TODO: build AppSettings() once and cache it with @lru_cache."""
-    raise NotImplementedError("TODO: implement this task")
+    """Return the process-wide ``AppSettings``, built on first use."""
+    return AppSettings()

@@ -101,17 +101,28 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 # ``row_count``, with ``model_config = ConfigDict(from_attributes=True)``, so
 # it can be built from a ``Dataset`` ORM object.
 #
-# TODO: replace the placeholder classes below with the real models
 class DatasetCreate(BaseModel):
-    pass
+    name: str = Field(min_length=1, max_length=100)
+    description: str | None = Field(default=None, max_length=500)
+    kind: DatasetKind
+    row_count: int = Field(default=0, ge=0)
 
 
 class DatasetUpdate(BaseModel):
-    pass
+    name: str = Field(default=None, min_length=1, max_length=100)
+    description: str | None = Field(default=None, max_length=500)
+    kind: DatasetKind = Field(default=None)
+    row_count: int = Field(default=None, ge=0)
 
 
 class DatasetOut(BaseModel):
-    pass
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    name: str
+    description: str | None
+    kind: DatasetKind
+    row_count: int
 
 
 class DatasetPage(BaseModel):
@@ -135,7 +146,8 @@ def get_session(request: Request) -> Iterator[Session]:
     Endpoints commit explicitly: ``session.commit()``. (The async version is
     the same with ``async def``, ``async with``, and ``AsyncSession``.)
     """
-    raise NotImplementedError("TODO: implement this task")
+    with request.app.state.sessionmaker() as session:
+        yield session
 
 
 SessionDep = Annotated[Session, Depends(get_session)]
@@ -156,7 +168,20 @@ router = APIRouter(prefix="/datasets", tags=["datasets"])
 #   Let the database enforce uniqueness rather than doing SELECT-then-INSERT,
 #   which has a race condition.
 #
-# TODO: implement this task (see the spec above)
+def _commit_or_conflict(session: Session, name: str) -> None:
+    try:
+        session.commit()
+    except IntegrityError:
+        session.rollback()
+        raise HTTPException(status.HTTP_409_CONFLICT, detail=f"Dataset '{name}' already exists") from None
+
+
+@router.post("", response_model=DatasetOut, status_code=status.HTTP_201_CREATED)
+def create_dataset(payload: DatasetCreate, session: SessionDep) -> Dataset:
+    dataset = Dataset(**payload.model_dump())
+    session.add(dataset)
+    _commit_or_conflict(session, payload.name)
+    return dataset
 
 
 # ---------------------------------------------------------------------------
@@ -169,7 +194,16 @@ router = APIRouter(prefix="/datasets", tags=["datasets"])
 # Hint: ``session.get(Dataset, dataset_id)`` returns ``None`` when the
 # row is missing. Tasks 6 and 7 need the same lookup, so a small helper pays off.
 #
-# TODO: implement this task (see the spec above)
+def _get_or_404(session: Session, dataset_id: int) -> Dataset:
+    dataset = session.get(Dataset, dataset_id)
+    if dataset is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail=f"Dataset {dataset_id} not found")
+    return dataset
+
+
+@router.get("/{dataset_id}", response_model=DatasetOut)
+def read_dataset(dataset_id: int, session: SessionDep) -> Dataset:
+    return _get_or_404(session, dataset_id)
 
 
 # ---------------------------------------------------------------------------
@@ -191,7 +225,24 @@ router = APIRouter(prefix="/datasets", tags=["datasets"])
 # ``select(Dataset).where(*conditions).order_by(Dataset.id).limit(...).offset(...)``.
 # Run them with ``session.scalar(...)`` and ``session.scalars(...)``.
 #
-# TODO: implement this task (see the spec above)
+@router.get("", response_model=DatasetPage)
+def list_datasets(
+    session: SessionDep,
+    kind: DatasetKind | None = None,
+    q: str | None = None,
+    limit: Annotated[int, Query(ge=1, le=100)] = 20,
+    offset: Annotated[int, Query(ge=0)] = 0,
+) -> DatasetPage:
+    conditions = []
+    if kind is not None:
+        conditions.append(Dataset.kind == kind)
+    if q:
+        conditions.append(Dataset.name.icontains(q, autoescape=True))
+    total = session.scalar(select(func.count()).select_from(Dataset).where(*conditions))
+    rows = session.scalars(
+        select(Dataset).where(*conditions).order_by(Dataset.id).limit(limit).offset(offset)
+    )
+    return DatasetPage(total=total or 0, items=[DatasetOut.model_validate(row) for row in rows])
 
 
 # ---------------------------------------------------------------------------
@@ -208,7 +259,14 @@ router = APIRouter(prefix="/datasets", tags=["datasets"])
 # * Commit. Renaming to a name that is already taken gives ``409``, with the
 #   same detail as in Task 3 (the name that was sent).
 #
-# TODO: implement this task (see the spec above)
+@router.patch("/{dataset_id}", response_model=DatasetOut)
+def update_dataset(dataset_id: int, payload: DatasetUpdate, session: SessionDep) -> Dataset:
+    dataset = _get_or_404(session, dataset_id)
+    changes = payload.model_dump(exclude_unset=True)
+    for field, value in changes.items():
+        setattr(dataset, field, value)
+    _commit_or_conflict(session, changes.get("name", dataset.name))
+    return dataset
 
 
 # ---------------------------------------------------------------------------
@@ -220,7 +278,11 @@ router = APIRouter(prefix="/datasets", tags=["datasets"])
 # Hint: ``session.delete(obj)``, then commit. (On ``AsyncSession``, ``delete``
 # is a coroutine, so you would write ``await session.delete(obj)``.)
 #
-# TODO: implement this task (see the spec above)
+@router.delete("/{dataset_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_dataset(dataset_id: int, session: SessionDep) -> None:
+    dataset = _get_or_404(session, dataset_id)
+    session.delete(dataset)
+    session.commit()
 
 
 def create_app(database_url: str = "sqlite://") -> FastAPI:

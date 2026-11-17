@@ -47,7 +47,7 @@ class Account(Base):
     balance: Mapped[int] = mapped_column(default=0)
     version: Mapped[int] = mapped_column(default=1)
 
-    pass
+    __mapper_args__ = {"version_id_col": version}
 
     def __repr__(self) -> str:
         return f"Account(id={self.id}, owner={self.owner!r}, balance={self.balance})"
@@ -67,7 +67,11 @@ def load_twice(session: Session, account_id: int) -> tuple[Account, Account]:
     object it already has for that primary key instead of building a new one.
     Raise ``LookupError`` if the account does not exist.
     """
-    raise NotImplementedError("TODO: implement this task")
+    first = session.get(Account, account_id)
+    if first is None:
+        raise LookupError(f"Account {account_id} not found")
+    second = session.scalars(select(Account).where(Account.id == account_id)).one()
+    return first, second
 
 
 # ---------------------------------------------------------------------------
@@ -82,7 +86,10 @@ def create_pending(session: Session, owner: str) -> int:
     disappear. Use flush when you need a generated id (for example to build a
     related row) before you decide whether to commit.
     """
-    raise NotImplementedError("TODO: implement this task")
+    account = Account(owner=owner)
+    session.add(account)
+    session.flush()
+    return account.id
 
 
 # ---------------------------------------------------------------------------
@@ -98,7 +105,17 @@ def transfer(factory: sessionmaker[Session], from_id: int, to_id: int, amount: i
       lower than ``amount``; ``LookupError`` if either account is missing.
       In every error case neither balance changes.
     """
-    raise NotImplementedError("TODO: implement this task")
+    if amount <= 0:
+        raise ValueError("amount must be positive")
+    with factory.begin() as session:
+        source = session.get(Account, from_id)
+        target = session.get(Account, to_id)
+        if source is None or target is None:
+            raise LookupError("account not found")
+        if source.balance < amount:
+            raise ValueError("insufficient funds")
+        source.balance -= amount
+        target.balance += amount
 
 
 # ---------------------------------------------------------------------------
@@ -114,7 +131,14 @@ def create_account_or_none(session: Session, owner: str, balance: int = 0) -> Ac
       ``PendingRollbackError``.
     * Let other exceptions propagate.
     """
-    raise NotImplementedError("TODO: implement this task")
+    account = Account(owner=owner, balance=balance)
+    session.add(account)
+    try:
+        session.commit()
+    except IntegrityError:
+        session.rollback()
+        return None
+    return account
 
 
 # ---------------------------------------------------------------------------
@@ -134,7 +158,16 @@ def open_accounts(session: Session, owners: Iterable[str]) -> list[str]:
     >>> open_accounts(session, ["ann", "bob", "ann"])  # doctest: +SKIP
     ['ann', 'bob']
     """
-    raise NotImplementedError("TODO: implement this task")
+    created: list[str] = []
+    for owner in owners:
+        try:
+            with session.begin_nested():
+                session.add(Account(owner=owner))
+        except IntegrityError:
+            continue
+        created.append(owner)
+    session.commit()
+    return created
 
 
 # ---------------------------------------------------------------------------
@@ -159,19 +192,27 @@ class AccountRepository:
         self.session = session
 
     def add(self, account: Account) -> Account:
-        raise NotImplementedError("TODO: implement this task")
+        self.session.add(account)
+        self.session.flush()
+        return account
 
     def get(self, account_id: int) -> Account | None:
-        raise NotImplementedError("TODO: implement this task")
+        return self.session.get(Account, account_id)
 
     def get_by_owner(self, owner: str) -> Account | None:
-        raise NotImplementedError("TODO: implement this task")
+        return self.session.scalars(select(Account).where(Account.owner == owner)).one_or_none()
 
     def list(self, *, limit: int = 100, offset: int = 0) -> Sequence[Account]:
-        raise NotImplementedError("TODO: implement this task")
+        stmt = select(Account).order_by(Account.owner).limit(limit).offset(offset)
+        return self.session.scalars(stmt).all()
 
     def delete(self, account_id: int) -> bool:
-        raise NotImplementedError("TODO: implement this task")
+        account = self.session.get(Account, account_id)
+        if account is None:
+            return False
+        self.session.delete(account)
+        self.session.flush()
+        return True
 
 
 # ---------------------------------------------------------------------------
@@ -187,7 +228,7 @@ def make_api_session_factory(engine: Engine) -> sessionmaker[Session]:
     JSON, so they turn expiry off. (With ``AsyncSession`` this setting is
     practically mandatory: see the next exercise.)
     """
-    raise NotImplementedError("TODO: implement this task")
+    return sessionmaker(bind=engine, expire_on_commit=False)
 
 
 def open_account_for_response(factory: sessionmaker[Session], owner: str, balance: int) -> Account:
@@ -200,4 +241,8 @@ def open_account_for_response(factory: sessionmaker[Session], owner: str, balanc
 
     Hint: ``with factory() as session: ...`` closes the session on exit.
     """
-    raise NotImplementedError("TODO: implement this task")
+    with factory() as session:
+        account = Account(owner=owner, balance=balance)
+        session.add(account)
+        session.commit()
+    return account
